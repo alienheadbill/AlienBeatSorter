@@ -1,0 +1,8 @@
+librosa>=0.10.2
+soundfile>=0.12.1
+numpy
+yt-dlp[default]
+deno
+imageio-ffmpeg
+sounddevice
+tkinterdnd2

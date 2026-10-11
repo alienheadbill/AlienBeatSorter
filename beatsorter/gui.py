@@ -1,0 +1,1544 @@
+"""Beat Sorter window (Tkinter, ships with Python on Windows).
+
+Layout and styling live here and in theme.py; all sorting logic lives in
+the other modules and is unchanged by the look of the window.
+"""
+
+from __future__ import annotations
+
+import os
+import queue
+import subprocess
+import sys
+import threading
+import tkinter as tk
+from collections import Counter
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+from typing import List, Optional
+
+from . import downloader, intake
+from . import theme as T
+from . import player as player_mod
+from .builder import (NeedsCopy, PlanItem, UnsafePath, add_items, build, check_folders,
+                      link_stem, plan, remove_tag_links, tag_folder)
+from .classifier import Decision, classify
+from .config import Settings
+from .pipeline import Record, analyze_library
+from .report import accuracy, suggest_bpm_range, write_csv
+from .tags import TagStore
+from . import updater
+from .version import __version__
+
+
+def _mmss(sec: float) -> str:
+    sec = max(0, int(sec))
+    return f"{sec // 60}:{sec % 60:02d}"
+
+COLUMNS = [
+    ("play", "", 30, "center"),
+    ("file", "FILE", 260, "w"),
+    ("bpm", "BPM", 52, "e"),
+    ("key", "KEY", 86, "w"),
+    ("tags", "TAGS", 140, "w"),
+    ("folder", "GOES TO", 170, "w"),
+    ("flags", "NOTES", 180, "w"),
+]
+FILTERS = ["All files", "Sorted", "Needs review", "One-shots",
+           "Name vs. detection differ", "Errors / not analyzed"]
+
+
+class App(tk.Frame):
+    def __init__(self, root: tk.Tk, fonts: dict):
+        super().__init__(root, bg=T.BG)
+        self.root = root
+        self.f = fonts
+        self.s = Settings.load()
+        self.records: List[Record] = []
+        self.decisions: List[Decision] = []
+        self.q: "queue.Queue" = queue.Queue()
+        self.cancel_evt = threading.Event()
+        self.busy = False
+        self.sort_col, self.sort_rev = "folder", False
+        self._reclass_job = None
+        self._settings_win: Optional[tk.Toplevel] = None
+        # tags + preview player
+        self.tags = TagStore()
+        self.tag_map = self.tags.all()
+        self.player = player_mod.Player()
+        # downloads
+        self.dl_jobs: "queue.Queue" = queue.Queue()
+        self.dl_cancel = threading.Event()
+        self.dl_active = 0
+        self._dl_thread: Optional[threading.Thread] = None
+
+        # setting variables (edited in the Settings window)
+        self.src_var = tk.StringVar(value=self.s.source)
+        self.out_var = tk.StringVar(value=self.s.output)
+        self.lo_var = tk.StringVar(value=f"{self.s.bpm_min:g}")
+        self.hi_var = tk.StringVar(value=f"{self.s.bpm_max:g}")
+        self.os_var = tk.StringVar(value=f"{self.s.oneshot_seconds:g}")
+        self.bc_var = tk.StringVar(value=f"{self.s.bpm_conf_min:g}")
+        self.kc_var = tk.StringVar(value=f"{self.s.key_conf_min:g}")
+        self.detkey_var = tk.BooleanVar(value=self.s.use_detected_key)
+        self.tagname_var = tk.BooleanVar(value=self.s.add_tags_to_names)
+        for v in (self.lo_var, self.hi_var, self.os_var, self.bc_var, self.kc_var, self.detkey_var):
+            v.trace_add("write", lambda *a: self._schedule_reclassify())
+
+        root.title("Beat Sorter")
+        root.minsize(1000, 680)
+        self.pack(fill="both", expand=True)
+        self._build_ui()
+        self.after(100, self._poll)
+        self.after(200, self._tick_player)
+        self.after(400, self._show_update_result)
+        self.after(2500, lambda: self._check_updates(quiet=True))
+
+    # ================= layout =================
+    def _build_ui(self):
+        self.header = T.Header(self, self.f)
+        self.header.pack(fill="x")
+        ttk.Button(self, text="⚙  Settings", style="Ghost.TButton",
+                   command=self._open_settings).place(relx=1.0, x=-20, y=20, anchor="ne")
+
+        body = tk.Frame(self, bg=T.BG, padx=20, pady=4)
+        body.pack(fill="both", expand=True)
+
+        # --- update banner (hidden until an update is found) ---
+        self.upd_bar = tk.Frame(body, bg="#2a1640", highlightthickness=1,
+                                highlightbackground=T.PURPLE, padx=14, pady=8)
+        self.upd_text = tk.Label(self.upd_bar, bg="#2a1640", fg=T.TEXT, font=self.f["bold"],
+                                 anchor="w", justify="left")
+        self.upd_text.pack(side="left")
+        x = tk.Label(self.upd_bar, text="✕", bg="#2a1640", fg=T.MUTED, cursor="hand2",
+                     font=self.f["body"])
+        x.pack(side="right", padx=(10, 0))
+        x.bind("<Button-1>", lambda e: self.upd_bar.pack_forget())
+        ttk.Button(self.upd_bar, text="Install & restart", style="Accent.TButton",
+                   command=self._install_update).pack(side="right")
+        ttk.Button(self.upd_bar, text="What's new", style="Card.TButton",
+                   command=self._show_update_notes).pack(side="right", padx=(0, 8))
+        self._upd_info = None
+
+        # --- folders card ---
+        fc = T.card(body)
+        self.folders_card = fc
+        fc.pack(fill="x")
+        fc.columnconfigure(1, weight=1)
+        for row, (label, var, cmd) in enumerate((("YOUR BEATS", self.src_var, self._pick_src),
+                                                  ("SORTED FOLDER", self.out_var, self._pick_out))):
+            ttk.Label(fc, text=label, style="CardMuted.TLabel", width=16).grid(
+                row=row, column=0, sticky="w", pady=4)
+            ttk.Entry(fc, textvariable=var).grid(row=row, column=1, sticky="ew", padx=10, pady=4)
+            ttk.Button(fc, text="Browse", style="Card.TButton", command=cmd).grid(
+                row=row, column=2, pady=4)
+
+        # --- tabs ---
+        tabbar = tk.Frame(body, bg=T.BG)
+        tabbar.pack(fill="x", pady=(14, 0))
+        self.tab_btns = {}
+        for key, label in (("library", "Library"), ("download", "Download from YouTube")):
+            b = ttk.Button(tabbar, text=label, style="Tab.TButton",
+                           command=lambda k=key: self._show_tab(k))
+            b.pack(side="left", padx=(0, 6))
+            self.tab_btns[key] = b
+        tk.Frame(body, bg=T.BORDER, height=1).pack(fill="x")
+        self.tab_frames = {}
+        lib = tk.Frame(body, bg=T.BG)
+        self.tab_frames["library"] = lib
+
+        # --- actions ---
+        act = tk.Frame(lib, bg=T.BG, pady=10)
+        act.pack(fill="x")
+        self.analyze_btn = ttk.Button(act, text="Scan beats", style="Accent.TButton",
+                                      command=self._analyze)
+        self.analyze_btn.pack(side="left")
+        self.build_btn = ttk.Button(act, text="Build sorted folder", command=self._build,
+                                    state="disabled")
+        self.build_btn.pack(side="left", padx=10)
+        self.cancel_btn = ttk.Button(act, text="Cancel", style="Ghost.TButton",
+                                     command=self._cancel)
+        self.more_btn = ttk.Button(act, text="More  ▾", style="Ghost.TButton",
+                                   command=self._show_more)
+        self.more_btn.pack(side="right")
+        self.more_menu = tk.Menu(self, tearoff=0, bg=T.SURFACE, fg=T.TEXT, bd=0,
+                                 activebackground=T.SELECT, activeforeground=T.ACCENT,
+                                 font=self.f["body"])
+        self.more_menu.add_command(label="Suggest BPM range from my tagged files",
+                                   command=self._suggest_range)
+        self.more_menu.add_command(label="Accuracy report", command=self._accuracy)
+        self.more_menu.add_command(label="Export results to CSV", command=self._export)
+        self.more_menu.add_separator()
+        self.more_menu.add_command(label=f"Check for updates  (you have v{__version__})",
+                                   command=lambda: self._check_updates(quiet=False))
+        self.more_menu.add_command(label="Undo last update", command=self._rollback)
+
+        # --- progress + status ---
+        self.pbar = T.Progress(lib)
+        self.pbar.pack(fill="x")
+        self.status = tk.StringVar(value="Pick your beats folder, then hit Scan.")
+        ttk.Label(lib, textvariable=self.status, style="Status.TLabel").pack(anchor="w", pady=(4, 8))
+
+        # --- stats ---
+        stats = tk.Frame(lib, bg=T.BG)
+        stats.pack(fill="x", pady=(0, 10))
+        self.stats = {}
+        for i, (key, label, color) in enumerate((
+                ("files", "Files", T.TEXT), ("sorted", "Sorted", T.ACCENT),
+                ("review", "Need review", T.AMBER), ("oneshots", "One-shots", T.VIOLET),
+                ("differ", "Name ≠ detection", T.CORAL))):
+            stats.columnconfigure(i, weight=1, uniform="stat")
+            st = T.Stat(stats, label, color, self.f)
+            st.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 10, 0))
+            self.stats[key] = st
+
+        ttk.Label(lib, style="Muted.TLabel",
+                  text="Double-click or Space to play · drag beats into FL Studio · right-click to "
+                       "tag · your originals are only read, never moved or renamed").pack(
+            side="bottom", anchor="w", pady=(0, 10))
+
+        main = tk.Frame(lib, bg=T.BG)
+        main.pack(fill="both", expand=True)
+
+        # --- sidebar: filters ---
+        side_card = tk.Frame(main, bg=T.SURFACE, highlightthickness=1,
+                             highlightbackground=T.BORDER, width=240)
+        side_card.pack(side="left", fill="y", padx=(0, 12), pady=(0, 6))
+        side_card.pack_propagate(False)
+        scroller = T.ScrollFrame(side_card)
+        scroller.pack(fill="both", expand=True, padx=(12, 2), pady=12)
+        side = scroller.inner
+
+        def section(text):
+            ttk.Label(side, text=text, style="CardMuted.TLabel").pack(anchor="w", pady=(10, 4))
+
+        top_row = tk.Frame(side, bg=T.SURFACE)
+        top_row.pack(fill="x")
+        ttk.Label(top_row, text="SEARCH", style="CardMuted.TLabel").pack(side="left")
+        clr = tk.Label(top_row, text="Clear filters", bg=T.SURFACE, fg=T.PURPLE_HOVER,
+                       font=self.f["small"], cursor="hand2")
+        clr.pack(side="right")
+        clr.bind("<Button-1>", lambda e: self._clear_filters())
+        tk.Frame(side, bg=T.SURFACE, height=4).pack()
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *a: self._refresh_table())
+        ttk.Entry(side, textvariable=self.search_var).pack(fill="x")
+
+        section("SHOW")
+        self.filter_var = tk.StringVar(value=FILTERS[0])
+        cb = ttk.Combobox(side, textvariable=self.filter_var, values=FILTERS, state="readonly")
+        cb.pack(fill="x")
+        cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_table())
+
+        section("BPM")
+        bpm_row = tk.Frame(side, bg=T.SURFACE)
+        bpm_row.pack(fill="x")
+        self.f_lo_var, self.f_hi_var = tk.StringVar(), tk.StringVar()
+        ttk.Entry(bpm_row, textvariable=self.f_lo_var, width=6).pack(side="left")
+        ttk.Label(bpm_row, text="  to  ", style="CardMuted.TLabel").pack(side="left")
+        ttk.Entry(bpm_row, textvariable=self.f_hi_var, width=6).pack(side="left")
+        for v in (self.f_lo_var, self.f_hi_var):
+            v.trace_add("write", lambda *a: self._refresh_table())
+
+        section("KEY")
+        self.key_chips_frame = tk.Frame(side, bg=T.SURFACE)
+        self.key_chips_frame.pack(fill="x")
+        section("TAGS")
+        self.tag_chips_frame = tk.Frame(side, bg=T.SURFACE)
+        self.tag_chips_frame.pack(fill="x")
+
+        self.key_filter: set = set()
+        self.tag_filter: set = set()
+
+        # --- right: toolbar, table, now playing ---
+        right = tk.Frame(main, bg=T.BG)
+        right.pack(side="left", fill="both", expand=True)
+
+        tb = tk.Frame(right, bg=T.BG)
+        tb.pack(fill="x", pady=(0, 8))
+        self.play_btn = ttk.Button(tb, text="▶  Play", style="Card.TButton", command=self._toggle_play)
+        self.play_btn.pack(side="left")
+        self.tag_btn = ttk.Button(tb, text="+ Tag", style="Card.TButton",
+                                  command=lambda: self._popup_tag_menu(self.tag_btn))
+        self.tag_btn.pack(side="left", padx=(8, 0))
+        self.untag_btn = ttk.Button(tb, text="− Untag", style="Card.TButton",
+                                    command=lambda: self._popup_untag_menu(self.untag_btn))
+        self.untag_btn.pack(side="left", padx=(8, 0))
+        self.count_lbl = ttk.Label(tb, text="", style="Muted.TLabel")
+        self.count_lbl.pack(side="right")
+
+        self.np = tk.Frame(right, bg=T.SURFACE, highlightthickness=1, highlightbackground=T.BORDER,
+                           padx=12, pady=8)  # now-playing bar (shown while playing)
+        self.np_title = tk.Label(self.np, bg=T.SURFACE, fg=T.ACCENT, font=self.f["bold"], anchor="w")
+        self.np_title.pack(side="left")
+        self.np_time = tk.Label(self.np, bg=T.SURFACE, fg=T.MUTED, font=self.f["small"])
+        self.np_time.pack(side="right")
+        ttk.Button(self.np, text="■  Stop", style="Card.TButton", command=self._stop_play).pack(
+            side="right", padx=(0, 12))
+        self.np_bar = T.Progress(self.np, height=3)
+        self.np_bar.pack(side="left", fill="x", expand=True, padx=14)
+
+        tf = tk.Frame(right, bg=T.SURFACE, highlightthickness=1, highlightbackground=T.BORDER)
+        tf.pack(fill="both", expand=True, pady=(0, 6))
+        self.table_frame = tf
+        tf.columnconfigure(0, weight=1)
+        tf.rowconfigure(0, weight=1)
+        self.tree = ttk.Treeview(tf, columns=[c[0] for c in COLUMNS], show="headings",
+                                 selectmode="extended")
+        for key, title, width, anchor in COLUMNS:
+            self.tree.heading(key, text=title, anchor=anchor, command=lambda k=key: self._sort_by(k))
+            self.tree.column(key, width=width, anchor=anchor, minwidth=30,
+                             stretch=key in ("file", "folder", "flags"))
+        ys = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=ys.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        ys.grid(row=0, column=1, sticky="ns")
+        self.tree.tag_configure("alt", background=T.ROW_ALT)
+        self.tree.tag_configure("review", foreground=T.AMBER)
+        self.tree.tag_configure("flag", foreground=T.CORAL)
+        self.tree.tag_configure("error", foreground="#ff8f9a")
+        self.tree.tag_configure("oneshot", foreground=T.VIOLET)
+        self.tree.tag_configure("playing", foreground=T.ACCENT)
+        self.tree.bind("<Double-1>", lambda e: self._toggle_play(force_play=True))
+        self.tree.bind("<space>", lambda e: (self._toggle_play(), "break")[1])
+        self.tree.bind("<Return>", lambda e: self._toggle_play(force_play=True))
+        self.tree.bind("<Button-3>", self._row_menu)
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._update_toolbar())
+        self._setup_drag()
+        self._ghost = T.load_image("head_ghost.png")
+        self.empty = tk.Label(tf, bg=T.SURFACE, fg=T.MUTED, font=self.f["body"], justify="center",
+                              image=self._ghost, compound="top", pady=8,
+                              text="No signals yet.\nChoose your beats folder and hit Scan.")
+        self.empty.place(relx=0.5, rely=0.56, anchor="center")
+        self._update_toolbar()
+
+        dl = tk.Frame(body, bg=T.BG)
+        self.tab_frames["download"] = dl
+        self._build_download_tab(dl)
+        self._show_tab("library")
+
+    # ================= tabs =================
+    def _show_tab(self, key: str):
+        for k, fr in self.tab_frames.items():
+            fr.pack_forget()
+            self.tab_btns[k].configure(style="TabOn.TButton" if k == key else "Tab.TButton")
+        self.tab_frames[key].pack(fill="both", expand=True)
+        if key == "download":
+            self._update_dl_hint()
+
+    # ================= download tab =================
+    DL_COLUMNS = [
+        ("title", "TITLE", 330, "w"),
+        ("status", "STATUS", 170, "w"),
+        ("bpm", "BPM", 60, "e"),
+        ("key", "KEY", 100, "w"),
+        ("src", "FROM", 120, "w"),
+        ("sorted", "SORTED INTO", 230, "w"),
+    ]
+
+    def _build_download_tab(self, dl: tk.Frame):
+        top = T.card(dl)
+        top.pack(fill="x", pady=(14, 0))
+        top.columnconfigure(0, weight=1)
+        ttk.Label(top, text="PASTE YOUTUBE LINKS  ·  one per line  ·  playlists welcome",
+                  style="CardMuted.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self.url_box = tk.Text(top, height=4, bg=T.SURFACE_2, fg=T.TEXT, insertbackground=T.ACCENT,
+                               relief="flat", font=self.f["body"], wrap="none", padx=10, pady=8,
+                               highlightthickness=1, highlightbackground=T.BORDER,
+                               highlightcolor=T.ACCENT_DIM, selectbackground=T.SELECT)
+        self.url_box.grid(row=1, column=0, sticky="ew")
+        btns = tk.Frame(top, bg=T.SURFACE)
+        btns.grid(row=1, column=1, sticky="n", padx=(12, 0))
+        self.dl_btn = ttk.Button(btns, text="Beam it down", style="Accent.TButton",
+                                 command=self._start_downloads)
+        self.dl_btn.pack(fill="x")
+        self.dl_stop_btn = ttk.Button(btns, text="Stop", style="Card.TButton",
+                                      command=self._stop_downloads, state="disabled")
+        self.dl_stop_btn.pack(fill="x", pady=(8, 0))
+
+        fmt_row = tk.Frame(top, bg=T.SURFACE)
+        fmt_row.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(fmt_row, text="SAVE AS", style="CardMuted.TLabel").pack(side="left", padx=(0, 10))
+        self.fmt_btns = {}
+        for key, label in (("wav", "WAV"), ("mp3", "MP3")):
+            b = ttk.Button(fmt_row, text=label, style="Seg.TButton",
+                           command=lambda k=key: self._set_format(k))
+            b.pack(side="left", padx=(0, 2))
+            self.fmt_btns[key] = b
+        self.fmt_note = ttk.Label(fmt_row, style="CardMuted.TLabel")
+        self.fmt_note.pack(side="left", padx=(12, 0))
+        self._set_format(self.s.download_format, save=False)
+
+        info = tk.Frame(dl, bg=T.BG)
+        info.pack(fill="x", pady=(10, 10))
+        self.dl_hint = tk.StringVar()
+        ttk.Label(info, textvariable=self.dl_hint, style="Status.TLabel").pack(side="left")
+        ttk.Button(info, text="Update downloader", style="Ghost.TButton",
+                   command=self._update_downloader).pack(side="right")
+        self.src_var.trace_add("write", lambda *a: self._update_dl_hint())
+        self.out_var.trace_add("write", lambda *a: self._update_dl_hint())
+
+        ttk.Label(dl, style="Muted.TLabel",
+                  text="For your own uploads, or beats whose producers allow downloads. "
+                       "YouTube's terms generally don't allow downloading, and most \"free\" "
+                       "type beats are free for non-profit use only.").pack(
+            side="bottom", anchor="w", pady=(0, 10))
+
+        tf = tk.Frame(dl, bg=T.SURFACE, highlightthickness=1, highlightbackground=T.BORDER)
+        tf.pack(fill="both", expand=True, pady=(0, 6))
+        tf.columnconfigure(0, weight=1)
+        tf.rowconfigure(0, weight=1)
+        self.dl_tree = ttk.Treeview(tf, columns=[c[0] for c in self.DL_COLUMNS], show="headings")
+        for key, title, width, anchor in self.DL_COLUMNS:
+            self.dl_tree.heading(key, text=title, anchor=anchor)
+            self.dl_tree.column(key, width=width, anchor=anchor, stretch=key in ("title", "sorted"))
+        ys = ttk.Scrollbar(tf, orient="vertical", command=self.dl_tree.yview)
+        self.dl_tree.configure(yscrollcommand=ys.set)
+        self.dl_tree.grid(row=0, column=0, sticky="nsew")
+        ys.grid(row=0, column=1, sticky="ns")
+        self.dl_tree.tag_configure("done", foreground=T.ACCENT)
+        self.dl_tree.tag_configure("fail", foreground=T.CORAL)
+        self.dl_tree.tag_configure("work", foreground=T.BLUE)
+        self.dl_tree.tag_configure("muted", foreground=T.MUTED)
+        self.dl_tree.bind("<Double-1>", self._open_download_location)
+        self._dl_ghost = T.load_image("ship_ghost.png")
+        self.dl_empty = tk.Label(tf, bg=T.SURFACE, fg=T.MUTED, font=self.f["body"], justify="center",
+                                 image=self._dl_ghost, compound="top", pady=8,
+                                 text="Paste a link above and hit Beam it down.\n"
+                                      "Each beat is saved, read for BPM + key, and dropped "
+                                      "straight into your Sorted folder.")
+        self.dl_empty.place(relx=0.5, rely=0.55, anchor="center")
+
+    FORMAT_NOTES = {
+        "wav": "Full quality, works everywhere · about 30 MB per beat",
+        "mp3": "320 kbps · about 6 MB per beat · smaller, slightly lossier",
+    }
+
+    def _set_format(self, fmt: str, save: bool = True):
+        if fmt not in self.FORMAT_NOTES:
+            fmt = "wav"
+        self.s.download_format = fmt
+        for k, b in self.fmt_btns.items():
+            b.configure(style="SegOn.TButton" if k == fmt else "Seg.TButton")
+        self.fmt_note.configure(text=self.FORMAT_NOTES[fmt])
+        if save:
+            self.s.save()
+        if hasattr(self, "dl_hint"):  # not built yet during startup
+            self._update_dl_hint()
+
+    def _update_dl_hint(self):
+        src = self.src_var.get().strip()
+        if not src:
+            self.dl_hint.set("Pick your beats folder above first. Downloads are saved inside it.")
+            return
+        then = ("then sorts them into your Sorted folder" if self.out_var.get().strip()
+                else "pick a Sorted folder above to sort them automatically")
+        fmt = self.s.download_format.upper()
+        self.dl_hint.set(f"Saves {fmt} files to \"{intake.DOWNLOAD_FOLDER}\" in your beats folder, "
+                         f"{then}  ·  downloader {downloader.downloader_version()}")
+
+    def _dl_set(self, row: str, **vals):
+        if not self.dl_tree.exists(row):
+            return
+        cur = dict(zip([c[0] for c in self.DL_COLUMNS], self.dl_tree.item(row, "values")))
+        tag = vals.pop("tag", None)
+        cur.update({k: v for k, v in vals.items()})
+        self.dl_tree.item(row, values=[cur.get(c[0], "") for c in self.DL_COLUMNS])
+        if tag is not None:
+            self.dl_tree.item(row, tags=(tag,) if tag else ())
+
+    def _dl_add_row(self, title: str, status: str, tag: str = "muted") -> str:
+        self.dl_empty.place_forget()
+        return self.dl_tree.insert("", "end", values=(title, status, "", "", "", ""), tags=(tag,))
+
+    def _start_downloads(self):
+        ok, why = downloader.available()
+        if not ok:
+            messagebox.showerror("Beat Sorter", why)
+            return
+        s = self._read_settings()
+        if s is None or not s.source or not Path(s.source).is_dir():
+            messagebox.showerror("Beat Sorter", "Pick your beats folder first. Downloads are saved inside it.")
+            return
+        s.save()
+        urls = [u.strip() for u in self.url_box.get("1.0", "end").split() if u.strip()]
+        urls = [u for u in urls if u.lower().startswith(("http://", "https://", "www.", "youtu"))]
+        if not urls:
+            messagebox.showinfo("Beat Sorter", "Paste one or more YouTube links first.")
+            return
+        self.url_box.delete("1.0", "end")
+        for u in urls:
+            if not u.lower().startswith("http"):
+                u = "https://" + u
+            row = self._dl_add_row(u, "Looking up…")
+            threading.Thread(target=self._probe_worker, args=(row, u), daemon=True).start()
+
+    def _probe_worker(self, row: str, url: str):
+        try:
+            self.q.put(("dl_probe", row, downloader.probe(url), None))
+        except Exception as e:
+            msg = downloader._friendly_error(str(e))
+            self.q.put(("dl_probe", row, None, msg))
+
+    def _on_probe(self, row: str, pr, err: Optional[str]):
+        if err:
+            self._dl_set(row, status="Failed", sorted=err, tag="fail")
+            return
+        if pr.is_playlist:
+            n = len(pr.entries)
+            if n == 0:
+                self._dl_set(row, title=pr.title, status="Empty playlist", tag="fail")
+                return
+            ans = messagebox.askyesnocancel(
+                "Playlist",
+                f"\"{pr.title}\" is a playlist with {n} videos.\n\n"
+                f"Yes: download all {n}\n"
+                + ("No: download just the video in the link\n" if pr.has_single_video else "")
+                + "Cancel: skip it")
+            if ans is None or (ans is False and not pr.has_single_video):
+                self._dl_set(row, title=pr.title, status="Skipped", tag="muted")
+                return
+            if ans:
+                self.dl_tree.delete(row)
+                for url, title in pr.entries:
+                    r = self._dl_add_row(title, "Waiting")
+                    self._enqueue(r, url, "")
+                return
+            self._dl_set(row, title="(video from playlist link)", status="Waiting")
+            self._enqueue(row, pr.url, "")
+            return
+        self._dl_set(row, title=pr.title, status="Waiting")
+        self._enqueue(row, pr.url, pr.video_id)
+
+    def _enqueue(self, row: str, url: str, video_id: str):
+        self.dl_active += 1
+        self.dl_stop_btn.configure(state="normal")
+        self.dl_jobs.put((row, url, video_id))
+        if not self._dl_thread or not self._dl_thread.is_alive():
+            self._dl_thread = threading.Thread(target=self._dl_worker, daemon=True)
+            self._dl_thread.start()
+
+    def _dl_worker(self):
+        """Downloads one at a time, in order."""
+        while True:
+            try:
+                row, url, vid = self.dl_jobs.get(timeout=1.0)
+            except queue.Empty:
+                return
+            if self.dl_cancel.is_set():
+                self.q.put(("dl_done", row, None, "Stopped"))
+                continue
+            s = self._read_settings_threadsafe()
+            last = [0.0]
+
+            def prog(stage, frac, row=row):
+                import time
+                now = time.monotonic()
+                if stage == "Downloading" and now - last[0] < 0.25 and frac < 1:
+                    return
+                last[0] = now
+                label = f"Downloading {frac:.0%}" if stage == "Downloading" else stage + "…"
+                self.q.put(("dl_status", row, label))
+
+            try:
+                res = intake.process(url, s, progress=prog, cancel=self.dl_cancel, video_id=vid)
+                self.q.put(("dl_done", row, res, None))
+            except downloader.Cancelled:
+                self.q.put(("dl_done", row, None, "Stopped"))
+            except Exception as e:
+                self.q.put(("dl_done", row, None, str(e)))
+
+    def _read_settings_threadsafe(self) -> Settings:
+        # Settings object is plain data; copy the current values.
+        from dataclasses import replace
+        return replace(self.s)
+
+    def _on_dl_done(self, row: str, res, err: Optional[str]):
+        self.dl_active = max(0, self.dl_active - 1)
+        if self.dl_active == 0:
+            self.dl_stop_btn.configure(state="disabled")
+            self.dl_cancel.clear()
+        if err:
+            self._dl_set(row, status="Stopped" if err == "Stopped" else "Failed",
+                         sorted="" if err == "Stopped" else err,
+                         tag="muted" if err == "Stopped" else "fail")
+            return
+        d = res.decision
+        if res.sorted_to is not None and self.s.output:
+            where = str(res.sorted_to.parent.relative_to(Path(self.s.output))).replace("\\", "/")
+            status, tag = "Sorted ✓", "done"
+        else:
+            where, status, tag = res.note, ("Already have it" if "Already" in res.note else "Saved"), "muted"
+        self._dl_set(row, title=res.title, status=status, bpm=f"{d.bpm:g}" if d.bpm else "",
+                     key=d.key_label, src=self._source_label(d), sorted=where, tag=tag)
+        self._dl_paths = getattr(self, "_dl_paths", {})
+        self._dl_paths[row] = res.record.path
+        # Add to the library view if a scan has been done (a partial list
+        # must never be used for a full rebuild).
+        if self.records and not any(r.path == res.record.path for r in self.records):
+            self.records.append(res.record)
+            self._reclassify()
+
+    def _stop_downloads(self):
+        self.dl_cancel.set()
+        while True:
+            try:
+                row, _, _ = self.dl_jobs.get_nowait()
+                self.q.put(("dl_done", row, None, "Stopped"))
+            except queue.Empty:
+                break
+
+    def _open_download_location(self, _event):
+        sel = self.dl_tree.selection()
+        p = getattr(self, "_dl_paths", {}).get(sel[0]) if sel else None
+        if p and sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", str(p)])
+
+    def _update_downloader(self):
+        if not messagebox.askyesno("Update downloader",
+                                   "Download the latest version of the YouTube downloader?\n\n"
+                                   "Do this when downloads start failing; YouTube changes often."):
+            return
+        self.dl_hint.set("Updating downloader…")
+
+        def work():
+            ok, msg = downloader.update_downloader()
+            self.q.put(("dl_updated", ok, msg))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ================= self-update =================
+    def _check_updates(self, quiet: bool):
+        repo, _ = updater.config()
+        if not repo:
+            if not quiet:
+                messagebox.showinfo("Beat Sorter", "Automatic updates aren't set up yet "
+                                    "(no GitHub repository in update.json).")
+            return
+
+        def work():
+            try:
+                self.q.put(("upd_checked", updater.check(), None, quiet))
+            except Exception as e:
+                self.q.put(("upd_checked", None, str(e), quiet))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_checked(self, info, err, quiet):
+        if err:
+            if not quiet:
+                messagebox.showerror("Beat Sorter", f"Couldn't check for updates:\n{err}")
+            return
+        if info is None:
+            if not quiet:
+                messagebox.showinfo("Beat Sorter", f"You're up to date (v{__version__}).")
+            return
+        self._upd_info = info
+        first = next((ln.strip("-• ").strip() for ln in info.notes.splitlines() if ln.strip()), "")
+        self.upd_text.configure(text=f"Update available: v{info.version}"
+                                     + (f"  ·  {first}" if first else ""))
+        self.upd_bar.pack(fill="x", pady=(0, 10), before=self.folders_card)
+        if not quiet:
+            self._show_update_notes()
+
+    def _show_update_notes(self):
+        info = self._upd_info
+        if not info:
+            return
+        if messagebox.askyesno(f"What's new in v{info.version}",
+                               (info.notes or "Improvements and fixes.")
+                               + f"\n\nYou have v{__version__}. Install now? Beat Sorter will "
+                                 "restart. Your beats, tags and settings aren't touched."):
+            self._install_update(confirmed=True)
+
+    def _install_update(self, confirmed: bool = False):
+        info = self._upd_info
+        if not info:
+            return
+        if (self.busy or self.dl_active) and not messagebox.askyesno(
+                "Beat Sorter", "A scan or download is still running. Stop it and update now?"):
+            return
+        if not confirmed and not messagebox.askyesno(
+                "Install update", f"Install v{info.version} and restart Beat Sorter?"):
+            return
+        self.upd_text.configure(text=f"Downloading v{info.version}…")
+        self.cancel_evt.set()
+        self.dl_cancel.set()
+
+        def work():
+            try:
+                self.q.put(("upd_staged", updater.stage(info), None))
+            except Exception as e:
+                self.q.put(("upd_staged", None, str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_staged(self, path, err):
+        if err:
+            self.upd_text.configure(text="Update failed to download.")
+            messagebox.showerror("Beat Sorter", f"Couldn't download the update:\n{err}")
+            return
+        try:
+            updater.install(path)
+        except Exception as e:
+            messagebox.showerror("Beat Sorter", f"Couldn't start the update:\n{e}")
+            return
+        self._quit_for_update()
+
+    def _rollback(self):
+        lb = updater.latest_backup()
+        if not lb:
+            messagebox.showinfo("Beat Sorter", "There's no previous version to go back to yet.")
+            return
+        if not messagebox.askyesno("Undo last update",
+                                   f"Go back to v{lb[0]}? (You have v{__version__}.) "
+                                   "Beat Sorter will restart."):
+            return
+        updater.rollback()
+        self._quit_for_update()
+
+    def _quit_for_update(self):
+        try:
+            self.player.stop()
+        except Exception:
+            pass
+        self.root.destroy()
+        os._exit(0)  # let the installer replace our files right away
+
+    def _show_update_result(self):
+        r = updater.last_result()
+        if not r:
+            return
+        status, old, new, err = r
+        if status == "ok":
+            self.status.set(f"Updated to v{new}.")
+            messagebox.showinfo("Beat Sorter", f"Updated from v{old} to v{new}.")
+        else:
+            messagebox.showerror("Beat Sorter",
+                                 f"The update to v{new} didn't work, so v{old} was restored. "
+                                 f"Nothing else changed.\n\n{err[:600]}")
+
+    def _show_more(self):
+        b = self.more_btn
+        self.more_menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
+
+    # ================= settings window =================
+    def _open_settings(self):
+        if self._settings_win and self._settings_win.winfo_exists():
+            self._settings_win.lift()
+            return
+        w = tk.Toplevel(self.root, bg=T.BG)
+        w.title("Settings")
+        w.resizable(False, False)
+        w.transient(self.root)
+        self._settings_win = w
+        c = T.card(w, padding=18)
+        c.pack(fill="both", expand=True, padx=16, pady=16)
+
+        def section(text, row):
+            ttk.Label(c, text=text, style="Section.TLabel").grid(
+                row=row, column=0, columnspan=3, sticky="w", pady=(12 if row else 0, 4))
+
+        def field(label, var, row, hint):
+            ttk.Label(c, text=label, style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=4)
+            ttk.Entry(c, textvariable=var, width=8).grid(row=row, column=1, sticky="w", padx=10)
+            ttk.Label(c, text=hint, style="CardMuted.TLabel").grid(row=row, column=2, sticky="w")
+
+        section("Tempo", 0)
+        ttk.Label(c, text="Preferred BPM range", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=4)
+        rng = tk.Frame(c, bg=T.SURFACE)
+        rng.grid(row=1, column=1, columnspan=2, sticky="w", padx=10)
+        ttk.Entry(rng, textvariable=self.lo_var, width=6).pack(side="left")
+        ttk.Label(rng, text="  to  ", style="CardMuted.TLabel").pack(side="left")
+        ttk.Entry(rng, textvariable=self.hi_var, width=6).pack(side="left")
+        ttk.Button(rng, text="Suggest from my files", style="Card.TButton",
+                   command=self._suggest_range).pack(side="left", padx=10)
+        ttk.Label(c, style="CardMuted.TLabel",
+                  text="Detected tempos are halved/doubled to land here (70 vs 140).").grid(
+            row=2, column=0, columnspan=3, sticky="w")
+
+        section("Sorting", 3)
+        field("One-shots under", self.os_var, 4, "seconds")
+        field("Min BPM confidence", self.bc_var, 5, "below this → _Review")
+        field("Min key confidence", self.kc_var, 6, "below this → _Review")
+        ttk.Checkbutton(c, variable=self.detkey_var,
+                        text="Use detected key when a file has no key in its name").grid(
+            row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Label(c, style="CardMuted.TLabel",
+                  text="Off: those files go to a \"Key unknown\" folder instead of a guessed key.").grid(
+            row=8, column=0, columnspan=3, sticky="w", padx=(24, 0))
+        ttk.Checkbutton(c, variable=self.tagname_var,
+                        text="Add BPM/key to file names inside Sorted").grid(
+            row=9, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Label(c, style="CardMuted.TLabel",
+                  text="Only the copies in Sorted are renamed. Originals keep their names.").grid(
+            row=10, column=0, columnspan=3, sticky="w", padx=(24, 0))
+
+        ttk.Label(c, text=f"Beat Sorter v{__version__}", style="CardMuted.TLabel").grid(
+            row=11, column=0, columnspan=2, sticky="w", pady=(18, 0))
+        ttk.Button(c, text="Done", style="Accent.TButton", command=self._close_settings).grid(
+            row=11, column=2, sticky="e", pady=(18, 0))
+        w.protocol("WM_DELETE_WINDOW", self._close_settings)
+        w.update_idletasks()  # center over the main window
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_height()) // 3
+        w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        _dark_title_bar(w)
+
+    def _close_settings(self):
+        s = self._read_settings()
+        if s is None:
+            messagebox.showerror("Beat Sorter", "Check the settings: numbers only, and the "
+                                 "BPM range low must be below high.", parent=self._settings_win)
+            return
+        s.save()
+        self._settings_win.destroy()
+        self._settings_win = None
+
+    # ================= settings logic =================
+    def _read_settings(self) -> Optional[Settings]:
+        s = self.s
+        try:
+            s.bpm_min = float(self.lo_var.get())
+            s.bpm_max = float(self.hi_var.get())
+            s.oneshot_seconds = float(self.os_var.get())
+            s.bpm_conf_min = float(self.bc_var.get())
+            s.key_conf_min = float(self.kc_var.get())
+        except ValueError:
+            return None
+        if not (20 <= s.bpm_min < s.bpm_max <= 300):
+            return None
+        s.add_tags_to_names = self.tagname_var.get()
+        s.use_detected_key = self.detkey_var.get()
+        s.source, s.output = self.src_var.get().strip(), self.out_var.get().strip()
+        return s
+
+    def _schedule_reclassify(self):
+        if self._reclass_job:
+            self.after_cancel(self._reclass_job)
+        self._reclass_job = self.after(400, self._reclassify)
+
+    def _reclassify(self):
+        self._reclass_job = None
+        if not self.records or self.busy:
+            return
+        s = self._read_settings()
+        if s is None:
+            self.status.set("Check the settings: numbers only, and the BPM range low < high.")
+            return
+        self.decisions = [classify(r, s) for r in self.records]
+        self._refresh_table()
+        self._summarize()
+
+    # ================= folder pickers =================
+    def _pick_src(self):
+        d = filedialog.askdirectory(title="Choose your beats folder", initialdir=self.src_var.get() or None)
+        if d:
+            self.src_var.set(os.path.normpath(d))
+            if not self.out_var.get():
+                p = Path(d)
+                self.out_var.set(os.path.normpath(str(p.parent / f"{p.name} Sorted")))
+
+    def _pick_out(self):
+        d = filedialog.askdirectory(title="Choose (or create) the Sorted folder",
+                                    initialdir=self.out_var.get() or self.src_var.get() or None)
+        if d:
+            self.out_var.set(os.path.normpath(d))
+
+    # ================= scan =================
+    def _analyze(self):
+        s = self._read_settings()
+        if s is None:
+            messagebox.showerror("Beat Sorter", "Check the settings (⚙): numbers only, BPM range low < high.")
+            return
+        src = Path(s.source)
+        if not s.source or not src.is_dir():
+            messagebox.showerror("Beat Sorter", "Pick your beats folder first.")
+            return
+        s.save()
+        exclude = [Path(s.output)] if s.output else []
+        self._set_busy(True)
+        self.cancel_evt.clear()
+        self.records, self.decisions = [], []
+        self._refresh_table()
+
+        def progress(stage, done, total, rec):
+            self.q.put(("progress", stage, done, total))
+
+        def work():
+            try:
+                recs = analyze_library(s, src, exclude=exclude, progress=progress, cancel=self.cancel_evt)
+                self.q.put(("analyzed", recs))
+            except Exception as e:
+                self.q.put(("error", f"Scan failed: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _cancel(self):
+        self.cancel_evt.set()
+        self.status.set("Cancelling… finishing the files already in progress.")
+
+    # ================= build =================
+    def _build(self, allow_copy: bool = False, confirmed: bool = False):
+        s = self._read_settings()
+        if s is None or not self.records:
+            return
+        src, out = Path(s.source), Path(s.output) if s.output else None
+        if not out:
+            messagebox.showerror("Beat Sorter", "Pick a Sorted folder first.")
+            return
+        try:
+            check_folders(src, out)
+        except UnsafePath as e:
+            messagebox.showerror("Beat Sorter", str(e))
+            return
+        s.save()
+        decisions = [classify(r, s) for r in self.records]
+        items = plan(self.records, decisions, out, s.add_tags_to_names, tags=self.tag_map)
+        if not confirmed:
+            n_rev = sum(d.category == "Review" for d in decisions)
+            msg = (f"Build the Sorted folder at:\n{out}\n\n"
+                   f"{len(items)} files will be linked into BPM/key folders "
+                   f"({n_rev} in _Review).\n\n"
+                   "Your original files are not moved, renamed or changed. Anything "
+                   "Beat Sorter put in this Sorted folder before is replaced.\n\nContinue?")
+            if not messagebox.askyesno("Build Sorted Folder", msg):
+                return
+        self._set_busy(True)
+
+        def work():
+            try:
+                res = build(items, src, out, allow_copy=allow_copy,
+                            progress=lambda d, t: self.q.put(("progress", "Building", d, t)))
+                self.q.put(("built", res, out))
+            except NeedsCopy as e:
+                self.q.put(("needs_copy", e))
+            except UnsafePath as e:
+                self.q.put(("error", str(e)))
+            except Exception as e:
+                self.q.put(("error", f"Build failed: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ================= reports =================
+    def _export(self):
+        if not self.records:
+            messagebox.showinfo("Beat Sorter", "Scan first.")
+            return
+        p = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv")],
+                                         initialfile="beat_sorter_results.csv")
+        if p:
+            write_csv(Path(p), self.records, self.decisions)
+            self.status.set(f"CSV saved: {p}")
+
+    def _accuracy(self):
+        s = self._read_settings()
+        if not self.records or s is None:
+            messagebox.showinfo("Beat Sorter", "Scan first.")
+            return
+        acc = accuracy(self.records, s.bpm_min, s.bpm_max, s.oneshot_seconds)
+        lo, hi, rate = suggest_bpm_range(self.records, s.oneshot_seconds)
+
+        win = tk.Toplevel(self.root, bg=T.BG)
+        win.title("Accuracy report")
+        win.geometry("760x540")
+        txt = tk.Text(win, wrap="word", font=self.f["mono"], bg=T.SURFACE, fg=T.TEXT,
+                      insertbackground=T.ACCENT, relief="flat", padx=16, pady=14,
+                      highlightthickness=1, highlightbackground=T.BORDER)
+        txt.pack(fill="both", expand=True, padx=16, pady=16)
+        lines = ["HOW DETECTION COMPARES WITH YOUR FILE NAMES", "",
+                 "Files with tags are sorted by the name, so this only shows how far",
+                 "to trust detection for your UNTAGGED files.", ""]
+        if not acc.bpm_total and not acc.key_total:
+            lines.append("No files with BPM/key in the name were found.")
+        else:
+            lines += acc.summary_lines()
+            if rate > 0:
+                lines += ["", f"Best one-octave BPM range for your library: {lo:g}-{hi:g} "
+                              f"({rate:.0%} of tagged files match)."]
+            lines += ["", f"Disagreements ({len(acc.disagreements)}):"]
+            lines += [f"  {n}\n      {why}" for n, why in acc.disagreements[:500]]
+        txt.insert("1.0", "\n".join(lines))
+        txt.configure(state="disabled")
+
+    def _suggest_range(self):
+        s = self._read_settings()
+        if not self.records or s is None:
+            messagebox.showinfo("Beat Sorter", "Scan first, so there's data to learn from.")
+            return
+        lo, hi, rate = suggest_bpm_range(self.records, s.oneshot_seconds)
+        if rate <= 0:
+            messagebox.showinfo("Beat Sorter", "No files with a BPM in the name were found.")
+            return
+        cur = accuracy(self.records, s.bpm_min, s.bpm_max, s.oneshot_seconds)
+        cur_rate = ((cur.bpm_counts["exact"] + cur.bpm_counts["close"]) / cur.bpm_total) if cur.bpm_total else 0
+        if messagebox.askyesno(
+                "Suggested BPM range",
+                f"Based on {cur.bpm_total} files with a BPM in the name:\n\n"
+                f"Current range {s.bpm_min:g}-{s.bpm_max:g}: {cur_rate:.0%} match\n"
+                f"Suggested {lo:g}-{hi:g}: {rate:.0%} match\n\n"
+                "This decides whether untagged beats come out as e.g. 70 or 140.\n"
+                "Use the suggested range?"):
+            self.lo_var.set(f"{lo:g}")
+            self.hi_var.set(f"{hi:g}")
+            s.bpm_min, s.bpm_max = lo, hi
+            s.save()
+
+    # ================= table / browser =================
+    @staticmethod
+    def _source_label(d: Decision) -> str:
+        srcs = {x for x in (d.bpm_source, d.key_source) if x}
+        if not srcs:
+            return ""
+        if srcs == {"filename"}:
+            return "name"
+        if srcs == {"detected"}:
+            return "detected"
+        return "name + detected"
+
+    def _tags_of(self, r: Record) -> set:
+        return self.tag_map.get(str(r.path), set())
+
+    def _row(self, r: Record, d: Decision):
+        playing = self.player.path is not None and self.player.path == r.path
+        return (
+            "▶" if playing else "",
+            str(r.rel),
+            f"{d.bpm:g}" if d.bpm else "",
+            d.key_label,
+            ", ".join(sorted(self._tags_of(r), key=str.lower)),
+            "/".join(d.folder) if d.folder else d.category,
+            "; ".join(d.flags),
+        )
+
+    def _matches(self, d: Decision) -> bool:
+        f = self.filter_var.get()
+        if f == "Sorted":
+            return d.category == "Sorted"
+        if f == "Needs review":
+            return d.category == "Review"
+        if f == "One-shots":
+            return d.category == "One-Shots"
+        if f == "Name vs. detection differ":
+            return any("tag" in fl for fl in d.flags)
+        if f == "Errors / not analyzed":
+            return d.category in ("Error", "Not analyzed")
+        return True
+
+    def _bpm_bounds(self):
+        def num(v):
+            try:
+                return float(v.get())
+            except ValueError:
+                return None
+        return num(self.f_lo_var), num(self.f_hi_var)
+
+    def _passes_filters(self, r: Record, d: Decision, term: str, lo, hi) -> bool:
+        if not self._matches(d):
+            return False
+        if term and term not in str(r.rel).lower() and term not in "/".join(d.folder).lower() \
+                and not any(term in t.lower() for t in self._tags_of(r)):
+            return False
+        if lo is not None or hi is not None:
+            if not d.bpm or (lo is not None and d.bpm < lo) or (hi is not None and d.bpm > hi):
+                return False
+        if self.key_filter and (not d.key or d.key.short not in self.key_filter):
+            return False
+        if self.tag_filter and not self.tag_filter <= self._tags_of(r):
+            return False
+        return True
+
+    def _refresh_table(self):
+        sel_paths = {str(self.records[int(i)].path) for i in self.tree.selection()
+                     if i.isdigit() and int(i) < len(self.records)}
+        self.tree.delete(*self.tree.get_children())
+        if not self.decisions:
+            self.count_lbl.configure(text="")
+            self.empty.place(relx=0.5, rely=0.56, anchor="center")
+            for st in self.stats.values():
+                st.set("–")
+            self._rebuild_chips()
+            return
+        self.empty.place_forget()
+        term = self.search_var.get().strip().lower()
+        lo, hi = self._bpm_bounds()
+        rows = []
+        for i, (r, d) in enumerate(zip(self.records, self.decisions)):
+            if not self._passes_filters(r, d, term, lo, hi):
+                continue
+            row = self._row(r, d)
+            if row[0]:
+                tag = "playing"
+            elif d.category in ("Error", "Not analyzed"):
+                tag = "error"
+            elif any("tag" in f for f in d.flags):
+                tag = "flag"
+            elif d.category == "Review":
+                tag = "review"
+            elif d.category == "One-Shots":
+                tag = "oneshot"
+            else:
+                tag = ""
+            rows.append((i, row, tag))
+        idx = [c[0] for c in COLUMNS].index(self.sort_col)
+
+        def key(item):
+            v = item[1][idx]
+            try:
+                return (0, float(v), "")
+            except ValueError:
+                return (1, 0.0, v.lower())
+
+        rows.sort(key=key, reverse=self.sort_rev)
+        reselect = []
+        for n, (i, row, tag) in enumerate(rows):
+            tags = tuple(t for t in (tag, "alt" if n % 2 else "") if t)
+            self.tree.insert("", "end", iid=str(i), values=row, tags=tags)
+            if str(self.records[i].path) in sel_paths:
+                reselect.append(str(i))
+        if reselect:
+            self.tree.selection_set(reselect)
+        self.count_lbl.configure(text=f"{len(rows)} of {len(self.records)} beats")
+        self._rebuild_chips()
+        self._update_toolbar()
+
+    def _sort_by(self, col):
+        if self.sort_col == col:
+            self.sort_rev = not self.sort_rev
+        else:
+            self.sort_col, self.sort_rev = col, False
+        self._refresh_table()
+
+    def _selected(self) -> List[int]:
+        return [int(i) for i in self.tree.selection() if i.isdigit() and int(i) < len(self.records)]
+
+    def _update_toolbar(self):
+        n = len(self._selected()) if hasattr(self, "tree") else 0
+        for b in (self.play_btn, self.tag_btn, self.untag_btn):
+            b.configure(state="normal" if n else "disabled")
+        if n == 0:
+            self.play_btn.configure(state="normal" if self.player.path else "disabled")
+        playing_sel = n and self.player.path is not None and \
+            self.records[self._selected()[0]].path == self.player.path
+        self.play_btn.configure(text="■  Stop" if playing_sel or (not n and self.player.path)
+                                else "▶  Play")
+
+    # ---- filter chips ----
+    def _rebuild_chips(self):
+        for fr in (self.key_chips_frame, self.tag_chips_frame):
+            for w in fr.winfo_children():
+                w.destroy()
+        keys = Counter(d.key.short for d in self.decisions if d.key)
+        order = sorted(keys, key=lambda k: (0 if k.endswith("m") else 1, k))
+        self.key_filter &= set(keys)
+        self._chip_grid(self.key_chips_frame, [(k, k, keys[k]) for k in order], self.key_filter, cols=4)
+        tag_counts = Counter(t for r in self.records for t in self._tags_of(r))
+        self.tag_filter &= set(tag_counts)
+        if tag_counts:
+            items = [(t, t, c) for t, c in sorted(tag_counts.items(), key=lambda x: (-x[1], x[0].lower()))]
+            self._chip_grid(self.tag_chips_frame, items, self.tag_filter, cols=2)
+        else:
+            tk.Label(self.tag_chips_frame, bg=T.SURFACE, fg=T.MUTED, font=self.f["small"],
+                     justify="left", wraplength=200,
+                     text="No tags yet. Select beats and click + Tag.").pack(anchor="w")
+        if not keys:
+            tk.Label(self.key_chips_frame, bg=T.SURFACE, fg=T.MUTED, font=self.f["small"],
+                     text="Scan to see keys.").pack(anchor="w")
+
+    def _chip_grid(self, frame, items, selected: set, cols: int):
+        for n, (value, label, count) in enumerate(items):
+            on = value in selected
+            chip = tk.Label(frame, text=label, cursor="hand2", padx=8, pady=3,
+                            bg=T.ACCENT if on else T.SURFACE_2,
+                            fg=T.ACCENT_TEXT if on else T.TEXT, font=self.f["small"])
+            chip.grid(row=n // cols, column=n % cols, sticky="ew", padx=(0, 4), pady=(0, 4))
+            chip.bind("<Button-1>", lambda e, v=value, sset=selected: self._toggle_chip(sset, v))
+            T.tooltip(chip, f"{count} beat{'s' if count != 1 else ''}")
+
+    def _toggle_chip(self, sset: set, value: str):
+        sset.symmetric_difference_update({value})
+        self._refresh_table()
+
+    def _clear_filters(self):
+        self.key_filter.clear()
+        self.tag_filter.clear()
+        self.f_lo_var.set("")
+        self.f_hi_var.set("")
+        self.search_var.set("")
+        self.filter_var.set(FILTERS[0])
+        self._refresh_table()
+
+    # ---- tagging ----
+    def _menu(self) -> tk.Menu:
+        return tk.Menu(self, tearoff=0, bg=T.SURFACE, fg=T.TEXT, bd=0,
+                       activebackground=T.SELECT, activeforeground=T.ACCENT, font=self.f["body"])
+
+    def _popup_tag_menu(self, widget, x=None, y=None):
+        m = self._add_tag_menu()
+        if x is None:
+            x, y = widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height()
+        m.tk_popup(x, y)
+
+    def _add_tag_menu(self) -> tk.Menu:
+        m = self._menu()
+        for t in self.tags.names()[:15]:
+            m.add_command(label=t, command=lambda t=t: self._apply_tag(t))
+        if self.tags.names():
+            m.add_separator()
+        m.add_command(label="New tag…", command=self._new_tag_dialog)
+        return m
+
+    def _popup_untag_menu(self, widget, x=None, y=None):
+        m = self._remove_tag_menu()
+        if m is None:
+            return
+        if x is None:
+            x, y = widget.winfo_rootx(), widget.winfo_rooty() + widget.winfo_height()
+        m.tk_popup(x, y)
+
+    def _remove_tag_menu(self) -> Optional[tk.Menu]:
+        present = sorted({t for i in self._selected() for t in self._tags_of(self.records[i])},
+                         key=str.lower)
+        if not present:
+            return None
+        m = self._menu()
+        for t in present:
+            m.add_command(label=t, command=lambda t=t: self._apply_untag(t))
+        return m
+
+    def _new_tag_dialog(self):
+        w = tk.Toplevel(self.root, bg=T.BG)
+        w.title("New tag")
+        w.resizable(False, False)
+        w.transient(self.root)
+        c = T.card(w, padding=16)
+        c.pack(padx=14, pady=14)
+        ttk.Label(c, text="TAG NAME", style="CardMuted.TLabel").pack(anchor="w")
+        var = tk.StringVar()
+        e = ttk.Entry(c, textvariable=var, width=28)
+        e.pack(pady=(4, 6))
+        ttk.Label(c, text="e.g. dark, drill, favorite, sold, needs mix",
+                  style="CardMuted.TLabel").pack(anchor="w")
+
+        def ok(*_):
+            t = var.get()
+            w.destroy()
+            if t.strip():
+                self._apply_tag(t)
+
+        ttk.Button(c, text="Add tag", style="Accent.TButton", command=ok).pack(anchor="e", pady=(12, 0))
+        e.bind("<Return>", ok)
+        e.bind("<Escape>", lambda *_: w.destroy())
+        w.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_height()) // 3
+        w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        _dark_title_bar(w)
+        e.focus_set()
+
+    def _sorted_ready(self) -> Optional[Path]:
+        """The Sorted folder if it's been built (so tag folders can be kept
+        in sync), else None."""
+        out = self.out_var.get().strip()
+        if not out:
+            return None
+        p = Path(out)
+        from .builder import MARKER
+        return p if (p / MARKER).exists() else None
+
+    def _apply_tag(self, tag: str):
+        idx = self._selected()
+        if not idx:
+            return
+        recs = [self.records[i] for i in idx]
+        tag = self.tags.add([str(r.path) for r in recs], tag)
+        if not tag:
+            return
+        self.tag_map = self.tags.all()
+        out = self._sorted_ready()
+        note = ""
+        if out:
+            items = []
+            for i in idx:
+                r, d = self.records[i], self.decisions[i]
+                if d.category in ("Error", "Not analyzed"):
+                    continue
+                dest = tag_folder(out, tag) / (link_stem(r, d, self.s.add_tags_to_names) + r.path.suffix)
+                if not dest.exists():
+                    items.append(PlanItem(r.path, dest))
+            try:
+                if items:
+                    add_items(items, Path(self.s.source), out)
+                note = f" · added to Sorted\\Tags\\{tag}"
+            except Exception as e:
+                note = f" · couldn't update Sorted ({e})"
+        self.status.set(f"Tagged {len(recs)} beat{'s' if len(recs) != 1 else ''} \"{tag}\"{note}")
+        self._refresh_table()
+
+    def _apply_untag(self, tag: str):
+        idx = self._selected()
+        recs = [self.records[i] for i in idx]
+        self.tags.remove([str(r.path) for r in recs], tag)
+        self.tag_map = self.tags.all()
+        out = self._sorted_ready()
+        if out:
+            for r in recs:
+                try:
+                    remove_tag_links(r.path, tag, Path(self.s.source), out)
+                except Exception:
+                    pass
+        self.status.set(f"Removed \"{tag}\" from {len(recs)} beat{'s' if len(recs) != 1 else ''}")
+        self._refresh_table()
+
+    # ---- right-click menu ----
+    def _row_menu(self, event):
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        if row not in self.tree.selection():
+            self.tree.selection_set(row)
+        m = self._menu()
+        r = self.records[int(row)]
+        playing = self.player.path == r.path
+        m.add_command(label="■  Stop" if playing else "▶  Play", command=self._toggle_play)
+        m.add_cascade(label="Add tag", menu=self._add_tag_menu())
+        um = self._remove_tag_menu()
+        if um is not None:
+            m.add_cascade(label="Remove tag", menu=um)
+        m.add_separator()
+        m.add_command(label="Show in Explorer", command=lambda: self._reveal(r.path))
+        m.tk_popup(event.x_root, event.y_root)
+
+    def _reveal(self, p: Path):
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", "/select,", str(p)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(p)])
+
+    # ---- playback ----
+    def _toggle_play(self, force_play: bool = False):
+        idx = self._selected()
+        if not idx:
+            if self.player.path and not force_play:
+                self._stop_play()
+            return
+        r = self.records[idx[0]]
+        if self.player.path == r.path and not force_play:
+            self._stop_play()
+            return
+        ok, why = player_mod.available()
+        if not ok:
+            messagebox.showerror("Beat Sorter", why)
+            return
+        self.np_title.configure(text=f"Loading  {r.path.name}")
+        self.np_time.configure(text="")
+        self._show_np(True)
+        self.player.play(r.path,
+                         on_started=lambda dur: self.q.put(("play_started", r.path, dur)),
+                         on_error=lambda msg: self.q.put(("play_error", msg)))
+        self._refresh_table()
+
+    def _stop_play(self):
+        self.player.stop()
+        self._show_np(False)
+        self._refresh_table()
+
+    def _show_np(self, show: bool):
+        if show:
+            self.np.pack(fill="x", pady=(0, 8), before=self.table_frame)
+        else:
+            self.np.pack_forget()
+
+    def _tick_player(self):
+        if self.player.path is not None and self.player.duration:
+            pos, dur = self.player.position(), self.player.duration
+            self.np_bar.set(pos, dur)
+            self.np_time.configure(text=f"{_mmss(pos)} / {_mmss(dur)}")
+            if pos >= dur - 0.05:
+                self._stop_play()
+        self.after(200, self._tick_player)
+
+    # ---- drag into FL Studio ----
+    def _setup_drag(self):
+        """Drag selected beats out of the list (into FL Studio's playlist,
+        channel rack or Explorer). Needs tkinterdnd2; silently off without it."""
+        try:
+            from tkinterdnd2 import COPY, DND_FILES
+            self.tree.drag_source_register(1, DND_FILES)
+        except Exception:
+            self._drag_ok = False
+            return
+        self._drag_ok = True
+
+        def init(event):
+            idx = self._selected()
+            if not idx:
+                row = self.tree.identify_row(event.y_root - self.tree.winfo_rooty())
+                if row:
+                    self.tree.selection_set(row)
+                    idx = self._selected()
+            paths = [str(self.records[i].path) for i in idx]
+            if not paths:
+                return None
+            data = " ".join("{" + p + "}" for p in paths)  # Tcl list, spaces-safe
+            return (COPY, DND_FILES, data)
+
+        self.tree.dnd_bind("<<DragInitCmd>>", init)
+
+    def _summarize(self):
+        c = Counter(d.category for d in self.decisions)
+        flagged = sum(1 for d in self.decisions if any("tag" in f for f in d.flags))
+        tagged = sum(1 for r in self.records if not r.tags.empty)
+        self.stats["files"].set(len(self.records))
+        self.stats["sorted"].set(c["Sorted"])
+        self.stats["review"].set(c["Review"])
+        self.stats["oneshots"].set(c["One-Shots"])
+        self.stats["differ"].set(flagged)
+        bad = c["Error"] + c["Not analyzed"]
+        msg = f"Scan complete · {tagged} files had BPM/key in the name"
+        if bad:
+            msg += f" · {bad} couldn't be read (filter: Errors)"
+        self.status.set(msg)
+
+    # ================= worker messages =================
+    def _set_busy(self, busy: bool):
+        self.busy = busy
+        self.header.set_busy(busy)
+        self.analyze_btn.configure(state="disabled" if busy else "normal")
+        self.build_btn.configure(state="disabled" if busy or not self.records else "normal")
+        self.build_btn.configure(style="TButton" if busy or not self.records else "Purple.TButton")
+        self.empty.configure(text="Scanning… results appear here when it finishes.\n"
+                                  "First scans take a while; later ones only check new files."
+                             if busy else "No signals yet.\nChoose your beats folder and hit Scan.")
+        if busy:
+            self.cancel_btn.pack(side="left")
+        else:
+            self.cancel_btn.pack_forget()
+            self.pbar.reset()
+
+    def _poll(self):
+        try:
+            while True:
+                msg = self.q.get_nowait()
+                kind = msg[0]
+                if kind == "progress":
+                    _, stage, done, total = msg
+                    if total:
+                        self.pbar.set(done, total)
+                        word = "Scanning" if stage == "Analyzing" else stage
+                        self.status.set(f"{word}… {done} of {total} files")
+                    else:
+                        self.status.set(stage)
+                elif kind == "analyzed":
+                    self.records = msg[1]
+                    self._set_busy(False)
+                    self._reclassify()
+                    if self.cancel_evt.is_set():
+                        self.status.set("Cancelled. Finished files are saved; Scan again to "
+                                        "continue where you left off.")
+                elif kind == "built":
+                    res, out = msg[1], msg[2]
+                    self._set_busy(False)
+                    note = f"\n\n{len(res.errors)} files had problems:\n" + "\n".join(res.errors[:10]) \
+                        if res.errors else ""
+                    self.status.set(f"Sorted folder built ({res.mode}): {res.linked + res.copied} files.")
+                    if messagebox.askyesno(
+                            "Done",
+                            f"Built with {res.mode}: {res.linked + res.copied} files.{note}\n\n"
+                            "In FL Studio, add this folder to the Browser (Options > File settings > "
+                            "Browser extra search folders), or refresh the Browser if it's already there.\n\n"
+                            "Open the Sorted folder now?"):
+                        if sys.platform == "win32":
+                            os.startfile(str(out))  # type: ignore[attr-defined]
+                elif kind == "needs_copy":
+                    e = msg[1]
+                    self._set_busy(False)
+                    gb = e.total_bytes / 1e9
+                    if messagebox.askyesno(
+                            "Copy instead of link?",
+                            f"{e.reason}\n\nBeat Sorter can't use hard links here, so it would "
+                            f"have to COPY the files, using about {gb:.1f} GB of space.\n\n"
+                            "Tip: put the Sorted folder on the same drive as your beats to "
+                            "avoid copying.\n\nCopy anyway?"):
+                        self._build(allow_copy=True, confirmed=True)
+                elif kind == "play_started":
+                    if self.player.path == msg[1]:
+                        self.np_title.configure(text=f"▶  {msg[1].name}")
+                        self._refresh_table()
+                elif kind == "play_error":
+                    self._show_np(False)
+                    self._refresh_table()
+                    self.status.set(msg[1])
+                elif kind == "dl_probe":
+                    self._on_probe(msg[1], msg[2], msg[3])
+                elif kind == "dl_status":
+                    self._dl_set(msg[1], status=msg[2], tag="work")
+                elif kind == "dl_done":
+                    self._on_dl_done(msg[1], msg[2], msg[3])
+                elif kind == "upd_checked":
+                    self._on_update_checked(msg[1], msg[2], msg[3])
+                elif kind == "upd_staged":
+                    self._on_update_staged(msg[1], msg[2])
+                elif kind == "dl_updated":
+                    self._update_dl_hint()
+                    (messagebox.showinfo if msg[1] else messagebox.showerror)("Beat Sorter", msg[2])
+                elif kind == "error":
+                    self._set_busy(False)
+                    messagebox.showerror("Beat Sorter", msg[1])
+        except queue.Empty:
+            pass
+        self.after(100, self._poll)
+
+
+def _log_error(text: str) -> Path:
+    from .config import app_dir
+    p = app_dir() / "error.log"
+    with open(p, "a", encoding="utf-8") as f:
+        f.write(text + "\n")
+    return p
+
+
+def _dark_title_bar(root: tk.Tk) -> None:
+    """Ask Windows 10/11 for a dark title bar (ignored elsewhere)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        root.update()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        val = ctypes.c_int(1)
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (new, old)
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(val), 4) == 0:
+                break
+    except Exception:
+        pass
+
+
+def run():
+    import traceback
+
+    try:  # drag-and-drop into FL Studio needs a tkdnd-enabled window
+        from tkinterdnd2 import TkinterDnD
+        root = TkinterDnD.Tk()
+    except Exception:
+        root = tk.Tk()
+
+    def report(exc, val, tb):
+        p = _log_error("".join(traceback.format_exception(exc, val, tb)))
+        messagebox.showerror("Beat Sorter", f"Something went wrong: {val}\n\nDetails saved to:\n{p}")
+
+    root.report_callback_exception = report
+    fonts = T.apply(root)
+    icons = [T.load_image(f"head_{n}.png") for n in (256, 64, 32, 16)]
+    icons = [i for i in icons if i]
+    if icons:
+        root.iconphoto(True, *icons)  # window + taskbar icon
+    App(root, fonts)
+    root.geometry("1180x800")
+    if sys.platform == "win32":
+        try:
+            root.state("zoomed")  # open maximized: more room for the beat list
+        except tk.TclError:
+            pass
+    _dark_title_bar(root)
+    root.mainloop()
