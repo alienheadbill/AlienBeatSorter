@@ -55,3 +55,33 @@ def test_parse(name, bpm, key):
     t = parse_filename(name)
     assert t.bpm == bpm, (name, t)
     assert (t.key.name if t.key else None) == key, (name, t)
+
+
+def test_camelot_wheel():
+    from beatsorter.keys import camelot, compatible, parse_key_name
+    k = parse_key_name
+    assert camelot(k("F minor")) == "4A" and camelot(k("C major")) == "8B"
+    assert camelot(k("Ab minor")) == "1A" and camelot(k("E major")) == "12B"
+    assert {x.short for x in compatible(k("F minor"))} == {"Fm", "Ab", "Cm", "Bbm"}
+    assert {x.short for x in compatible(k("C# minor"))} == {"C#m", "E", "Abm", "F#m"}  # wraps 12A->1A
+    # every key maps to a unique code
+    from beatsorter.keys import Key
+    codes = {camelot(Key(pc, m)) for pc in range(12) for m in ("minor", "major")}
+    assert len(codes) == 24
+
+
+def test_oneshot_names():
+    from beatsorter.oneshots import type_from_name
+    cases = {
+        "Kick 01.wav": "Kicks", "Hard_Kik_3.wav": "Kicks", "BD_punchy.wav": "Kicks",
+        "808 Kick Boom.wav": "Kicks", "Kick 808 hard.wav": "Kicks",  # an 808 kick is a kick
+        "Packs/808s/Zay 808 C.wav": "808s", "sub bass long.wav": "808s",
+        "Open Hat 2.wav": "Hi-Hats", "HH_closed_04.wav": "Hi-Hats", "hihat roll.wav": "Hi-Hats",
+        "Snare - Crack.wav": "Snares", "Rimshot dry.wav": "Snares", "Clap Big.wav": "Claps",
+        "snap 3.wav": "Claps", "Crash 1.wav": "Cymbals", "Shaker loop.wav": "Percussion",
+        "Riser FX 2.wav": "FX", "Vox Chop Hey.wav": "Vox", "Drums/Kicks/sound 12.wav": "Kicks",
+        "Hats/x1.wav": "Hi-Hats", "Chopped Soul.wav": None, "Bdayy.wav": None,
+        "Phat Lead.wav": "Melodic", "Chase.wav": None,
+    }
+    wrong = {n: type_from_name(n) for n, e in cases.items() if type_from_name(n) != e}
+    assert not wrong, wrong

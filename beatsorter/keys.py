@@ -97,3 +97,34 @@ def compare_bpm(detected: Optional[float], labeled: Optional[float]) -> str:
         if abs(detected - labeled * factor) <= 2.0 * max(factor, 1.0):
             return "half/double" if factor in (2.0, 0.5) else "triplet"
     return "wrong"
+
+
+# ---- Camelot wheel (compatible keys) ----
+# Number = position on the wheel, A = minor, B = major. Keys that mix well
+# are the same number (relative major/minor) or one step either way.
+_CAMELOT_MINOR = {8: 1, 3: 2, 10: 3, 5: 4, 0: 5, 7: 6, 2: 7, 9: 8, 4: 9, 11: 10, 6: 11, 1: 12}
+_CAMELOT_MAJOR = {11: 1, 6: 2, 1: 3, 8: 4, 3: 5, 10: 6, 5: 7, 0: 8, 7: 9, 2: 10, 9: 11, 4: 12}
+
+
+def camelot(key: "Key") -> str:
+    """Camelot code, e.g. F minor -> '4A', C major -> '8B'."""
+    if key.mode == "minor":
+        return f"{_CAMELOT_MINOR[key.pc]}A"
+    return f"{_CAMELOT_MAJOR[key.pc]}B"
+
+
+def from_camelot(code: str) -> "Key":
+    n, letter = int(code[:-1]), code[-1].upper()
+    table = _CAMELOT_MINOR if letter == "A" else _CAMELOT_MAJOR
+    pc = next(p for p, num in table.items() if num == n)
+    return Key(pc, "minor" if letter == "A" else "major")
+
+
+def compatible(key: "Key") -> set:
+    """The key itself, its relative major/minor, and its two neighbors on
+    the wheel (one step up and down)."""
+    code = camelot(key)
+    n, letter = int(code[:-1]), code[-1]
+    other = "B" if letter == "A" else "A"
+    up, down = n % 12 + 1, (n - 2) % 12 + 1
+    return {from_camelot(c) for c in (code, f"{n}{other}", f"{up}{letter}", f"{down}{letter}")}

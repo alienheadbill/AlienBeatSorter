@@ -29,6 +29,11 @@ class Settings:
     add_tags_to_names: bool = True  # name links in Sorted "name [140 Am].wav" (FL search)
     workers: int = 0  # 0 = automatic
     download_format: str = "wav"  # "wav" or "mp3" for YouTube downloads
+    fl_user_data: str = ""  # FL's "Image-Line" user data folder; blank = find it
+    fl_sync_bpm: bool = True  # what "Sync tags to FL Studio" sends
+    fl_sync_key: bool = True
+    fl_sync_types: bool = True
+    fl_sync_mine: bool = True
 
     @classmethod
     def load(cls) -> "Settings":

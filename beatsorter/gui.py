@@ -27,6 +27,7 @@ from .config import Settings
 from .pipeline import Record, analyze_library
 from .report import accuracy, suggest_bpm_range, write_csv
 from .tags import TagStore
+from .keys import PC_NAMES, Key, camelot, compatible
 from . import updater
 from .version import __version__
 
@@ -39,7 +40,7 @@ COLUMNS = [
     ("play", "", 30, "center"),
     ("file", "FILE", 260, "w"),
     ("bpm", "BPM", 52, "e"),
-    ("key", "KEY", 86, "w"),
+    ("key", "KEY", 112, "w"),
     ("tags", "TAGS", 140, "w"),
     ("folder", "GOES TO", 170, "w"),
     ("flags", "NOTES", 180, "w"),
@@ -65,6 +66,7 @@ class App(tk.Frame):
         # tags + preview player
         self.tags = TagStore()
         self.tag_map = self.tags.all()
+        self.overrides = self.tags.overrides()  # your BPM/key fixes
         self.player = player_mod.Player()
         # downloads
         self.dl_jobs: "queue.Queue" = queue.Queue()
@@ -168,6 +170,10 @@ class App(tk.Frame):
                                    command=self._suggest_range)
         self.more_menu.add_command(label="Accuracy report", command=self._accuracy)
         self.more_menu.add_command(label="Export results to CSV", command=self._export)
+        self.more_menu.add_command(label="Find duplicates…", command=self._find_duplicates)
+        self.more_menu.add_separator()
+        self.more_menu.add_command(label="Sync tags to FL Studio…", command=self._fl_sync_dialog)
+        self.more_menu.add_command(label="Undo last FL sync", command=self._fl_undo)
         self.more_menu.add_separator()
         self.more_menu.add_command(label=f"Check for updates  (you have v{__version__})",
                                    command=lambda: self._check_updates(quiet=False))
@@ -243,12 +249,17 @@ class App(tk.Frame):
         section("KEY")
         self.key_chips_frame = tk.Frame(side, bg=T.SURFACE)
         self.key_chips_frame.pack(fill="x")
+        section("ONE-SHOT TYPE")
+        self.type_chips_frame = tk.Frame(side, bg=T.SURFACE)
+        self.type_chips_frame.pack(fill="x")
         section("TAGS")
         self.tag_chips_frame = tk.Frame(side, bg=T.SURFACE)
         self.tag_chips_frame.pack(fill="x")
 
         self.key_filter: set = set()
         self.tag_filter: set = set()
+        self.compat_on = False  # also show compatible keys (Camelot wheel)
+        self.type_filter: set = set()  # one-shot types: Kicks, 808s, ...
 
         # --- right: toolbar, table, now playing ---
         right = tk.Frame(main, bg=T.BG)
@@ -264,6 +275,9 @@ class App(tk.Frame):
         self.untag_btn = ttk.Button(tb, text="− Untag", style="Card.TButton",
                                     command=lambda: self._popup_untag_menu(self.untag_btn))
         self.untag_btn.pack(side="left", padx=(8, 0))
+        self.fix_btn = ttk.Button(tb, text="✎  Fix", style="Card.TButton",
+                                  command=self._fix_dialog)
+        self.fix_btn.pack(side="left", padx=(8, 0))
         self.count_lbl = ttk.Label(tb, text="", style="Muted.TLabel")
         self.count_lbl.pack(side="right")
 
@@ -826,6 +840,7 @@ class App(tk.Frame):
         if s is None:
             self.status.set("Check the settings: numbers only, and the BPM range low < high.")
             return
+        self._attach_overrides()
         self.decisions = [classify(r, s) for r in self.records]
         self._refresh_table()
         self._summarize()
@@ -893,6 +908,7 @@ class App(tk.Frame):
             messagebox.showerror("Beat Sorter", str(e))
             return
         s.save()
+        self._attach_overrides()
         decisions = [classify(r, s) for r in self.records]
         items = plan(self.records, decisions, out, s.add_tags_to_names, tags=self.tag_map)
         if not confirmed:
@@ -987,14 +1003,10 @@ class App(tk.Frame):
     # ================= table / browser =================
     @staticmethod
     def _source_label(d: Decision) -> str:
-        srcs = {x for x in (d.bpm_source, d.key_source) if x}
-        if not srcs:
-            return ""
-        if srcs == {"filename"}:
-            return "name"
-        if srcs == {"detected"}:
-            return "detected"
-        return "name + detected"
+        names = {"filename": "name", "detected": "detected", "you": "you"}
+        order = ["you", "name", "detected"]
+        srcs = {names.get(x, x) for x in (d.bpm_source, d.key_source) if x}
+        return " + ".join(s for s in order if s in srcs)
 
     def _tags_of(self, r: Record) -> set:
         return self.tag_map.get(str(r.path), set())
@@ -1005,7 +1017,7 @@ class App(tk.Frame):
             "▶" if playing else "",
             str(r.rel),
             f"{d.bpm:g}" if d.bpm else "",
-            d.key_label,
+            f"{d.key_label}  {camelot(d.key)}" if d.key else d.key_label,
             ", ".join(sorted(self._tags_of(r), key=str.lower)),
             "/".join(d.folder) if d.folder else d.category,
             "; ".join(d.flags),
@@ -1042,7 +1054,9 @@ class App(tk.Frame):
         if lo is not None or hi is not None:
             if not d.bpm or (lo is not None and d.bpm < lo) or (hi is not None and d.bpm > hi):
                 return False
-        if self.key_filter and (not d.key or d.key.short not in self.key_filter):
+        if self.key_filter and (not d.key or d.key.short not in self._key_targets()):
+            return False
+        if self.type_filter and d.shot_type not in self.type_filter:
             return False
         if self.tag_filter and not self.tag_filter <= self._tags_of(r):
             return False
@@ -1114,7 +1128,7 @@ class App(tk.Frame):
 
     def _update_toolbar(self):
         n = len(self._selected()) if hasattr(self, "tree") else 0
-        for b in (self.play_btn, self.tag_btn, self.untag_btn):
+        for b in (self.play_btn, self.tag_btn, self.untag_btn, self.fix_btn):
             b.configure(state="normal" if n else "disabled")
         if n == 0:
             self.play_btn.configure(state="normal" if self.player.path else "disabled")
@@ -1132,8 +1146,31 @@ class App(tk.Frame):
         order = sorted(keys, key=lambda k: (0 if k.endswith("m") else 1, k))
         self.key_filter &= set(keys)
         self._chip_grid(self.key_chips_frame, [(k, k, keys[k]) for k in order], self.key_filter, cols=4)
+        if keys:
+            from .keys import parse_key_name
+            on = self.compat_on
+            sw = tk.Label(self.key_chips_frame, cursor="hand2", padx=8, pady=3, font=self.f["small"],
+                          text=("✓ " if on else "+ ") + "compatible keys",
+                          bg=T.PURPLE if on else T.SURFACE, fg="#ffffff" if on else T.PURPLE_HOVER)
+            sw.grid(row=(len(order) + 3) // 4, column=0, columnspan=4, sticky="w", pady=(2, 0))
+            sw.bind("<Button-1>", lambda e: self._toggle_compat())
+            extra = sorted(self._key_targets() - self.key_filter) if on and self.key_filter else []
+            T.tooltip(sw, ("Also showing " + ", ".join(extra)) if extra else
+                      "Also show keys that mix well (relative key + neighbors on the Camelot wheel)")
         tag_counts = Counter(t for r in self.records for t in self._tags_of(r))
         self.tag_filter &= set(tag_counts)
+        for w in self.type_chips_frame.winfo_children():
+            w.destroy()
+        types = Counter(d.shot_type for d in self.decisions if d.shot_type)
+        self.type_filter &= set(types)
+        if types:
+            from .oneshots import TYPES
+            order = sorted(types, key=lambda t: TYPES.index(t) if t in TYPES else 99)
+            self._chip_grid(self.type_chips_frame, [(t, t, types[t]) for t in order],
+                            self.type_filter, cols=3)
+        else:
+            tk.Label(self.type_chips_frame, bg=T.SURFACE, fg=T.MUTED, font=self.f["small"],
+                     text="No one-shots found.").pack(anchor="w")
         if tag_counts:
             items = [(t, t, c) for t, c in sorted(tag_counts.items(), key=lambda x: (-x[1], x[0].lower()))]
             self._chip_grid(self.tag_chips_frame, items, self.tag_filter, cols=2)
@@ -1153,7 +1190,25 @@ class App(tk.Frame):
                             fg=T.ACCENT_TEXT if on else T.TEXT, font=self.f["small"])
             chip.grid(row=n // cols, column=n % cols, sticky="ew", padx=(0, 4), pady=(0, 4))
             chip.bind("<Button-1>", lambda e, v=value, sset=selected: self._toggle_chip(sset, v))
-            T.tooltip(chip, f"{count} beat{'s' if count != 1 else ''}")
+            from .keys import parse_key_name
+            k = parse_key_name(value)
+            code = f" · {camelot(k)}" if k and frame is self.key_chips_frame else ""
+            T.tooltip(chip, f"{count} beat{'s' if count != 1 else ''}{code}")
+
+    def _key_targets(self) -> set:
+        """Selected keys, plus their compatible keys when that's switched on."""
+        if not self.compat_on:
+            return set(self.key_filter)
+        from .keys import parse_key_name
+        out = set()
+        for short in self.key_filter:
+            k = parse_key_name(short)
+            out |= {c.short for c in compatible(k)} if k else {short}
+        return out
+
+    def _toggle_compat(self):
+        self.compat_on = not self.compat_on
+        self._refresh_table()
 
     def _toggle_chip(self, sset: set, value: str):
         sset.symmetric_difference_update({value})
@@ -1162,6 +1217,7 @@ class App(tk.Frame):
     def _clear_filters(self):
         self.key_filter.clear()
         self.tag_filter.clear()
+        self.type_filter.clear()
         self.f_lo_var.set("")
         self.f_hi_var.set("")
         self.search_var.set("")
@@ -1290,6 +1346,387 @@ class App(tk.Frame):
         self.status.set(f"Removed \"{tag}\" from {len(recs)} beat{'s' if len(recs) != 1 else ''}")
         self._refresh_table()
 
+    # ---- FL Studio Browser tags ----
+    def _fl_sorted_paths(self) -> dict:
+        """Original path -> its link in the Sorted BPM/key folder (what FL's
+        Browser shows), if the Sorted folder has been built."""
+        out = self._sorted_ready()
+        if not out:
+            return {}
+        from .builder import TAGS_FOLDER
+        self._attach_overrides()
+        decisions = [classify(r, self.s) for r in self.records]
+        res = {}
+        for it in plan(self.records, decisions, out, self.s.add_tags_to_names, tags={}):
+            if TAGS_FOLDER not in it.dest.relative_to(out).parts[:1]:
+                res.setdefault(str(it.src), str(it.dest))
+        return res
+
+    def _fl_desired(self) -> dict:
+        from . import fltags
+        s = self.s
+        return fltags.desired_tags(self.records, self.decisions, self.tag_map, self._fl_sorted_paths(),
+                                   include_bpm=s.fl_sync_bpm, include_key=s.fl_sync_key,
+                                   include_types=s.fl_sync_types, include_mine=s.fl_sync_mine)
+
+    def _fl_sync_dialog(self):
+        from . import fltags
+        if not self.records:
+            messagebox.showinfo("Beat Sorter", "Scan first.")
+            return
+        w = tk.Toplevel(self.root, bg=T.BG)
+        w.title("Sync tags to FL Studio")
+        w.resizable(False, False)
+        w.transient(self.root)
+        c = T.card(w, padding=18)
+        c.pack(padx=14, pady=14)
+        ttk.Label(c, text="Send to FL Studio's Browser tags", style="Section.TLabel").grid(
+            row=0, column=0, columnspan=3, sticky="w")
+        tk.Label(c, bg=T.SURFACE, fg=T.MUTED, font=self.f["small"], justify="left", wraplength=520,
+                 text="Your beats get tags in FL's own Browser, so you can filter by them there "
+                      "(Browser → Tags). Tags you made in FL are kept; Beat Sorter only ever "
+                      "removes tags it added itself. FL's tag file is backed up first.").grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(4, 12))
+
+        ttk.Label(c, text="FL USER DATA FOLDER", style="CardMuted.TLabel").grid(row=2, column=0, sticky="w")
+        folder_var = tk.StringVar(value=self.s.fl_user_data)
+        found = tk.StringVar()
+
+        def refresh_found(*_):
+            bd = fltags.browser_dir(folder_var.get().strip() or None)
+            found.set(f"Tag file: {bd / 'Tags'}" if bd else
+                      "FL's settings weren't found. Click Browse and pick your \"Image-Line\" folder "
+                      "(usually Documents\\Image-Line).")
+            return bd
+
+        ttk.Entry(c, textvariable=folder_var, width=46).grid(row=3, column=0, columnspan=2, sticky="w")
+
+        def browse():
+            d = filedialog.askdirectory(title="Pick FL's \"Image-Line\" folder", parent=w)
+            if d:
+                folder_var.set(os.path.normpath(d))
+        ttk.Button(c, text="Browse", style="Card.TButton", command=browse).grid(row=3, column=2, padx=(8, 0))
+        folder_var.trace_add("write", refresh_found)
+        tk.Label(c, textvariable=found, bg=T.SURFACE, fg=T.MUTED, font=self.f["small"],
+                 wraplength=520, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 10))
+
+        ttk.Label(c, text="SEND", style="CardMuted.TLabel").grid(row=5, column=0, sticky="w")
+        opts = [("fl_sync_bpm", "BPM ranges (140-149bpm)"), ("fl_sync_key", "Keys (Fm, C#m…)"),
+                ("fl_sync_types", "One-shot types (Kicks, 808s…)"), ("fl_sync_mine", "Your Beat Sorter tags")]
+        vars_ = {}
+        for n, (attr, label) in enumerate(opts):
+            v = tk.BooleanVar(value=getattr(self.s, attr))
+            vars_[attr] = v
+            ttk.Checkbutton(c, text=label, variable=v).grid(row=6 + n // 2, column=n % 2, sticky="w",
+                                                            pady=2, padx=(0, 16))
+        where = ("your Sorted folder links (what you added to FL's Browser)" if self._sorted_ready()
+                 else "your original files (build the Sorted folder to tag those links instead)")
+        tk.Label(c, bg=T.SURFACE, fg=T.MUTED, font=self.f["small"], wraplength=520, justify="left",
+                 text=f"Tags go on {where}. FL Studio must be closed while syncing.").grid(
+            row=8, column=0, columnspan=3, sticky="w", pady=(10, 0))
+
+        def go():
+            bd = refresh_found()
+            if not bd:
+                messagebox.showerror("Beat Sorter", "Pick FL's \"Image-Line\" folder first.", parent=w)
+                return
+            self.s.fl_user_data = folder_var.get().strip()
+            for attr, v in vars_.items():
+                setattr(self.s, attr, v.get())
+            self.s.save()
+            desired = self._fl_desired()
+            _, _, preview = fltags.plan_sync(bd / "Tags", desired)
+            if not messagebox.askyesno(
+                    "Sync tags to FL Studio",
+                    f"{preview['files']} files will get tags in FL's Browser "
+                    f"({preview['added']} tags added, {preview['removed']} old Beat Sorter tags removed). "
+                    f"{preview['kept_user_tags']} tags you made in FL are kept.\n\n"
+                    "FL's tag file is backed up first. Continue?", parent=w):
+                return
+            try:
+                st = fltags.sync(bd / "Tags", desired)
+            except Exception as e:
+                messagebox.showerror("Beat Sorter", str(e), parent=w)
+                return
+            w.destroy()
+            self.status.set(f"Synced tags for {st['files']} files to FL Studio. Open FL → Browser → Tags.")
+            messagebox.showinfo("Beat Sorter", "Done. Open FL Studio, then in the Browser click "
+                                "Tags to filter by BPM, key and your tags.\n\n"
+                                "If anything looks wrong: More → Undo last FL sync.")
+
+        btns = tk.Frame(c, bg=T.SURFACE)
+        btns.grid(row=9, column=0, columnspan=3, sticky="e", pady=(16, 0))
+        ttk.Button(btns, text="Cancel", style="Card.TButton", command=w.destroy).pack(side="right")
+        ttk.Button(btns, text="Sync to FL", style="Accent.TButton", command=go).pack(side="right", padx=(0, 8))
+        refresh_found()
+        w.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_height()) // 3
+        w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        _dark_title_bar(w)
+
+    def _fl_undo(self):
+        from . import fltags
+        try:
+            p = fltags.undo_last()
+        except Exception as e:
+            messagebox.showerror("Beat Sorter", str(e))
+            return
+        if p:
+            messagebox.showinfo("Beat Sorter", f"FL's tag file was restored from the backup:\n{p}")
+        else:
+            messagebox.showinfo("Beat Sorter", "There's no FL sync to undo yet.")
+
+    def _fl_resync_after_build(self):
+        """Sorted links can move on a rebuild; keep FL's tags pointing at them."""
+        from . import fltags
+        from .config import app_dir
+        if not (app_dir() / "fl_sync_state.json").exists():
+            return  # never synced: nothing to keep up to date
+        bd = fltags.browser_dir(self.s.fl_user_data or None)
+        if not bd:
+            return
+        try:
+            fltags.sync(bd / "Tags", self._fl_desired())
+            self.status.set(self.status.get() + "  ·  FL Studio tags updated")
+        except RuntimeError:
+            self.status.set(self.status.get() + "  ·  close FL Studio, then More → Sync tags to FL")
+        except Exception:
+            pass
+
+    # ---- duplicates ----
+    def _find_duplicates(self):
+        if not self.records:
+            messagebox.showinfo("Beat Sorter", "Scan first.")
+            return
+        if self.busy:
+            return
+        self._set_busy(True)
+        recs = list(self.records)
+
+        def work():
+            from .duplicates import find_duplicates
+            try:
+                groups = find_duplicates(
+                    recs, progress=lambda st, d, t: self.q.put(("progress", st, d, t)),
+                    cancel=self.cancel_evt.is_set)
+                self.q.put(("dups_found", recs, groups))
+            except Exception as e:
+                self.q.put(("error", f"Duplicate search failed: {e}"))
+
+        self.cancel_evt.clear()
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_duplicates(self, recs, groups):
+        self._set_busy(False)
+        if not groups:
+            self.status.set("No duplicates found.")
+            messagebox.showinfo("Beat Sorter", "No duplicates found. 👽")
+            return
+        extra = sum(len(g.members) - 1 for g in groups)
+        self.status.set(f"Found {len(groups)} duplicate group{'s' if len(groups) != 1 else ''}"
+                        f" ({extra} extra cop{'ies' if extra != 1 else 'y'})")
+        w = tk.Toplevel(self.root, bg=T.BG)
+        w.title("Duplicates")
+        w.geometry("820x480")
+        w.transient(self.root)
+        top = tk.Frame(w, bg=T.BG, padx=16, pady=12)
+        top.pack(fill="x")
+        tk.Label(top, bg=T.BG, fg=T.TEXT, font=self.f["bold"], anchor="w", justify="left",
+                 wraplength=780, text=f"{len(groups)} group{'s' if len(groups) != 1 else ''} of duplicates. "
+                      "The first file in each group is the one to keep "
+                      "(BPM/key in its name, then WAV before MP3, then the bigger file).").pack(anchor="w")
+        tk.Label(top, bg=T.BG, fg=T.MUTED, font=self.f["small"], anchor="w",
+                 text="Nothing is deleted. Tagging marks the extra copies so you can review "
+                      "them with the \"duplicate\" tag filter.").pack(anchor="w", pady=(2, 0))
+        tf = tk.Frame(w, bg=T.SURFACE, highlightthickness=1, highlightbackground=T.BORDER)
+        tf.pack(fill="both", expand=True, padx=16)
+        tree = ttk.Treeview(tf, columns=("file", "kind", "size"), show="tree headings")
+        tree.heading("#0", text="")
+        tree.column("#0", width=30, stretch=False)
+        for col, title, width in (("file", "FILE", 520), ("kind", "MATCH", 110), ("size", "SIZE", 80)):
+            tree.heading(col, text=title, anchor="w")
+            tree.column(col, width=width, anchor="w", stretch=col == "file")
+        tree.pack(fill="both", expand=True)
+        tree.tag_configure("keep", foreground=T.ACCENT)
+        tree.tag_configure("extra", foreground=T.CORAL)
+        for n, g in enumerate(groups, 1):
+            kind = "identical file" if g.kind == "identical" else "same audio"
+            parent = tree.insert("", "end", open=True,
+                                 values=(f"Group {n}", kind, ""))
+            for k, i in enumerate(g.members):
+                r = recs[i]
+                tree.insert(parent, "end", values=(("✓ keep   " if k == 0 else "   extra   ") + str(r.rel),
+                                                   "", f"{r.size / 1e6:.1f} MB"),
+                            tags=("keep" if k == 0 else "extra",))
+        btns = tk.Frame(w, bg=T.BG, padx=16, pady=12)
+        btns.pack(fill="x")
+
+        def tag_extras():
+            paths = [str(recs[i].path) for g in groups for i in g.members[1:]]
+            self.tags.add(paths, "duplicate")
+            self.tag_map = self.tags.all()
+            self._refresh_table()
+            self.status.set(f"Tagged {len(paths)} extra cop{'ies' if len(paths) != 1 else 'y'} "
+                            "\"duplicate\". Click that tag in the sidebar to review them.")
+            w.destroy()
+
+        ttk.Button(btns, text=f"Tag {extra} extra cop{'ies' if extra != 1 else 'y'} \"duplicate\"",
+                   style="Accent.TButton", command=tag_extras).pack(side="right")
+        ttk.Button(btns, text="Close", style="Card.TButton", command=w.destroy).pack(
+            side="right", padx=(0, 8))
+        w.update_idletasks()  # center over the main window
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_height()) // 3
+        w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        _dark_title_bar(w)
+
+    # ---- BPM / key fixes ----
+    def _attach_overrides(self):
+        for r in self.records:
+            r.override = self.overrides.get(str(r.path), {})
+
+    def _apply_fix(self, bpm=None, key=None, clear_bpm=False, clear_key=False):
+        idx = self._selected()
+        if not idx:
+            return
+        paths = [str(self.records[i].path) for i in idx]
+        self.tags.set_override(paths, bpm=bpm, key=key, clear_bpm=clear_bpm, clear_key=clear_key)
+        self.overrides = self.tags.overrides()
+        self._reclassify()
+        n = len(paths)
+        what = "Reset" if clear_bpm and clear_key and bpm is None and key is None else "Fixed"
+        hint = "  ·  click Build sorted folder to move them in Sorted" if self._sorted_ready() else ""
+        self.status.set(f"{what} {n} beat{'s' if n != 1 else ''}{hint}")
+
+    def _scale_bpm(self, factor: float):
+        idx = self._selected()
+        if not idx:
+            return
+        for i in idx:  # each beat scales from its own current BPM
+            d = self.decisions[i]
+            if d.bpm:
+                self.tags.set_override([str(self.records[i].path)], bpm=round(d.bpm * factor, 1))
+        self.overrides = self.tags.overrides()
+        self._reclassify()
+        self.status.set(f"BPM {'halved' if factor < 1 else 'doubled'} on {len(idx)} beat"
+                        f"{'s' if len(idx) != 1 else ''}")
+
+    def _fix_dialog(self):
+        idx = self._selected()
+        if not idx:
+            return
+        first = self.decisions[idx[0]]
+        multi = len(idx) > 1
+        w = tk.Toplevel(self.root, bg=T.BG)
+        w.title("Fix BPM / key")
+        w.resizable(False, False)
+        w.transient(self.root)
+        c = T.card(w, padding=16)
+        c.pack(padx=14, pady=14)
+        title = (f"{len(idx)} beats selected" if multi
+                 else self.records[idx[0]].path.name)
+        ttk.Label(c, text=title, style="Section.TLabel").grid(row=0, column=0, columnspan=6,
+                                                             sticky="w", pady=(0, 10))
+
+        ttk.Label(c, text="BPM", style="CardMuted.TLabel").grid(row=1, column=0, sticky="w")
+        bpm_var = tk.StringVar(value="" if multi or not first.bpm else f"{first.bpm:g}")
+        bpm_row = tk.Frame(c, bg=T.SURFACE)  # own frame so the buttons stay compact
+        bpm_row.grid(row=1, column=1, columnspan=5, sticky="w", padx=(8, 0))
+        ttk.Entry(bpm_row, textvariable=bpm_var, width=8).pack(side="left", padx=(0, 8))
+
+        def scale(f):
+            try:
+                bpm_var.set(f"{round(float(bpm_var.get()) * f, 1):g}")
+            except ValueError:
+                pass
+        for label, f in (("½×", 0.5), ("2×", 2)):
+            tk.Button(bpm_row, text=label, command=lambda f=f: scale(f), bg=T.SURFACE_2, fg=T.TEXT,
+                      activebackground=T.BORDER, activeforeground=T.TEXT, relief="flat", bd=0,
+                      padx=10, pady=3, cursor="hand2", font=self.f["small"]).pack(side="left", padx=(0, 4))
+        if multi:
+            ttk.Label(bpm_row, text="blank = keep each beat's BPM", style="CardMuted.TLabel").pack(
+                side="left", padx=(8, 0))
+
+        ttk.Label(c, text="KEY", style="CardMuted.TLabel").grid(row=2, column=0, sticky="nw", pady=(14, 0))
+        sel = {"pc": None, "mode": "minor", "none": False}
+        if not multi and first.key:
+            sel["pc"], sel["mode"] = first.key.pc, first.key.mode
+        if not multi and first.no_key and first.key_source == "you":
+            sel["none"] = True
+        notes = tk.Frame(c, bg=T.SURFACE)
+        notes.grid(row=2, column=1, columnspan=5, sticky="w", padx=(8, 0), pady=(14, 0))
+        chips = {}
+
+        def paint():
+            for pc, ch in chips.items():
+                on = sel["pc"] == pc and not sel["none"]
+                ch.configure(bg=T.ACCENT if on else T.SURFACE_2, fg=T.ACCENT_TEXT if on else T.TEXT)
+            for m, b in mode_btns.items():
+                b.configure(style="SegOn.TButton" if sel["mode"] == m and not sel["none"] else "Seg.TButton")
+            none_chip.configure(bg=T.ACCENT if sel["none"] else T.SURFACE_2,
+                                fg=T.ACCENT_TEXT if sel["none"] else T.TEXT)
+
+        def pick(pc):
+            sel["pc"], sel["none"] = pc, False
+            paint()
+
+        for pc, nm in enumerate(PC_NAMES):
+            ch = tk.Label(notes, text=nm, width=3, cursor="hand2", pady=4, font=self.f["small"])
+            ch.grid(row=pc // 6, column=pc % 6, padx=(0, 4), pady=(0, 4))
+            ch.bind("<Button-1>", lambda e, pc=pc: pick(pc))
+            chips[pc] = ch
+        modes = tk.Frame(c, bg=T.SURFACE)
+        modes.grid(row=3, column=1, columnspan=5, sticky="w", padx=(8, 0), pady=(4, 0))
+        mode_btns = {}
+        for m in ("minor", "major"):
+            b = ttk.Button(modes, text=m, style="Seg.TButton",
+                           command=lambda m=m: (sel.update(mode=m, none=False), paint()))
+            b.pack(side="left", padx=(0, 2))
+            mode_btns[m] = b
+        none_chip = tk.Label(modes, text="No key", cursor="hand2", padx=10, pady=4,
+                             font=self.f["small"])
+        none_chip.pack(side="left", padx=(12, 0))
+        none_chip.bind("<Button-1>", lambda e: (sel.update(none=True), paint()))
+        paint()
+
+        def save():
+            bpm = None
+            txt = bpm_var.get().strip()
+            if txt:
+                try:
+                    bpm = float(txt)
+                except ValueError:
+                    messagebox.showerror("Beat Sorter", "BPM must be a number.", parent=w)
+                    return
+                if not 30 <= bpm <= 300:
+                    messagebox.showerror("Beat Sorter", "BPM should be between 30 and 300.", parent=w)
+                    return
+            key = "none" if sel["none"] else (
+                Key(sel["pc"], sel["mode"]).name if sel["pc"] is not None else None)
+            w.destroy()
+            if bpm is not None or key is not None:
+                self._apply_fix(bpm=bpm, key=key)
+
+        def reset():
+            w.destroy()
+            self._apply_fix(clear_bpm=True, clear_key=True)
+
+        btns = tk.Frame(c, bg=T.SURFACE)
+        btns.grid(row=4, column=0, columnspan=6, sticky="ew", pady=(18, 0))
+        ttk.Button(btns, text="Save", style="Accent.TButton", command=save).pack(side="right")
+        ttk.Button(btns, text="Reset to automatic", style="Card.TButton", command=reset).pack(
+            side="right", padx=(0, 8))
+        ttk.Label(btns, text="Your fixes win over file names and detection.",
+                  style="CardMuted.TLabel").pack(side="left")
+        w.bind("<Return>", lambda e: save())
+        w.bind("<Escape>", lambda e: w.destroy())
+        w.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_height()) // 3
+        w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        _dark_title_bar(w)
+
     # ---- right-click menu ----
     def _row_menu(self, event):
         row = self.tree.identify_row(event.y)
@@ -1302,6 +1739,13 @@ class App(tk.Frame):
         playing = self.player.path == r.path
         m.add_command(label="■  Stop" if playing else "▶  Play", command=self._toggle_play)
         m.add_cascade(label="Add tag", menu=self._add_tag_menu())
+        m.add_separator()
+        m.add_command(label="✎  Fix BPM / key…", command=self._fix_dialog)
+        m.add_command(label="BPM  ½×  (halve)", command=lambda: self._scale_bpm(0.5))
+        m.add_command(label="BPM  2×  (double)", command=lambda: self._scale_bpm(2.0))
+        if any(str(self.records[i].path) in self.overrides for i in self._selected()):
+            m.add_command(label="Reset to automatic BPM / key",
+                          command=lambda: self._apply_fix(clear_bpm=True, clear_key=True))
         um = self._remove_tag_menu()
         if um is not None:
             m.add_cascade(label="Remove tag", menu=um)
@@ -1442,6 +1886,7 @@ class App(tk.Frame):
                     note = f"\n\n{len(res.errors)} files had problems:\n" + "\n".join(res.errors[:10]) \
                         if res.errors else ""
                     self.status.set(f"Sorted folder built ({res.mode}): {res.linked + res.copied} files.")
+                    self._fl_resync_after_build()  # after the status, so its note shows
                     if messagebox.askyesno(
                             "Done",
                             f"Built with {res.mode}: {res.linked + res.copied} files.{note}\n\n"
@@ -1475,6 +1920,8 @@ class App(tk.Frame):
                     self._dl_set(msg[1], status=msg[2], tag="work")
                 elif kind == "dl_done":
                     self._on_dl_done(msg[1], msg[2], msg[3])
+                elif kind == "dups_found":
+                    self._show_duplicates(msg[1], msg[2])
                 elif kind == "upd_checked":
                     self._on_update_checked(msg[1], msg[2], msg[3])
                 elif kind == "upd_staged":

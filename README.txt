@@ -37,7 +37,7 @@ HOW FILES ARE SORTED
   140-149 BPM\C minor\       BPM range (10 BPM per folder) + key
   140-149 BPM\No Key\        drum loops (tempo, no key)
   No BPM\A minor\            pads/textures with no steady beat
-  One-Shots\<pack folder>\   files shorter than 2 seconds (adjustable)
+  One-Shots\Kicks\, 808s\...  short sounds, by type (Kicks, 808s, Snares, Hi-Hats...)
   _Review\140-149 BPM\...\   detection wasn't sure: best guess, check by ear
   140-149 BPM\Key unknown\   no key in the name, and "Use detected key" is off
   Tags\dark\, Tags\drill\    one folder per tag you create (see below)
@@ -106,6 +106,26 @@ BROWSING, TAGS AND PREVIEW (Library tab)
   Sorted\Tags\<tag>\ right away, so tags work in FL's Browser too.
 * Drag into FL Studio: drag beats from the list onto FL's playlist or
   channel rack.
+
+
+FL STUDIO BROWSER TAGS
+----------------------
+More > Sync tags to FL Studio puts your tags, BPM ranges (140-149bpm),
+keys (Fm) and one-shot types (Kicks) into FL's own Browser tags, so you can
+filter by them inside FL (Browser > Tags). Close FL Studio before syncing.
+* Tags you made in FL are kept; Beat Sorter only removes tags it added.
+* FL's tag file is backed up first. More > Undo last FL sync restores it.
+* After you rebuild the Sorted folder, FL's tags are updated automatically.
+
+
+FIXING, DUPLICATES, COMPATIBLE KEYS
+-----------------------------------
+* Fix BPM / key: select beats, click Fix (or right-click). Use 1/2x or 2x
+  for half-time mix-ups. Your fixes win over file names and detection.
+* Compatible keys: click a key in the sidebar, then "+ compatible keys" to
+  also see keys that mix well with it (Camelot wheel).
+* More > Find duplicates: finds identical files and the same beat saved
+  twice (e.g. WAV and MP3). Nothing is deleted; you can tag the extras.
 
 
 DOWNLOAD FROM YOUTUBE

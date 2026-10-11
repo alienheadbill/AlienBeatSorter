@@ -1,3 +1,10 @@
+1.6.0
+- Sync tags to FL Studio: your tags, BPM ranges, keys and one-shot types show up as filters in FL's own Browser (More > Sync tags to FL Studio). Keeps the tags you made in FL.
+- Fix BPM / key: correct a wrong key or BPM, or halve/double a BPM. Your fixes win over names and detection.
+- Compatible keys: show beats in keys that mix with the one you pick (Camelot wheel).
+- Find duplicates: same file twice, or the same beat as WAV and MP3 (More > Find duplicates).
+- One-shots sorted by type: Kicks, 808s, Snares, Hi-Hats, Claps, Cymbals and more.
+
 1.5.0
 - Self-updating: Beat Sorter checks GitHub for new versions on launch.
 - Beat browser: filters for BPM range, key and your own tags.

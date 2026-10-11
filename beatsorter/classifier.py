@@ -6,7 +6,7 @@ Folder layout inside Sorted:
   140-149 BPM/A minor/      confident BPM + key (from filename or detection)
   140-149 BPM/No Key/       tempo but no tonal content (drum loops)
   No BPM/A minor/           tonal but no steady pulse (pads, textures)
-  One-Shots/<pack folder>/  short files (kicks, snares, 808 hits)
+  One-Shots/Kicks/, 808s/, Snares/, Hi-Hats/...  short files, by type
   _Review/140-149 BPM/A minor/  detection unsure: best guess, check by ear
 BPM range folders are zero-padded ("090-099 BPM") so they sort in order.
 """
@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from .config import Settings
-from .keys import Key, compare_bpm, compare_keys
+from .keys import Key, compare_bpm, compare_keys, parse_key_name
 from .pipeline import Record
 
 # Tonality thresholds: below these a file is treated as having no key.
@@ -44,6 +44,7 @@ class Decision:
     detected_key: Optional[Key] = None
     folder: Tuple[str, ...] = ()  # path parts inside Sorted
     flags: List[str] = field(default_factory=list)
+    shot_type: str = ""  # one-shots: Kicks, 808s, Snares, ...
 
     @property
     def key_label(self) -> str:
@@ -108,12 +109,21 @@ def classify(rec: Record, s: Settings) -> Decision:
 
     dur = a.get("duration", 0.0)
     tags = rec.tags
+    ov = rec.override or {}
+    ov_bpm = ov.get("bpm")
+    ov_key = parse_key_name(ov["key"]) if ov.get("key") not in (None, "none") else None
+    ov_nokey = ov.get("key") == "none"
 
     if dur < s.oneshot_seconds:
-        parent = rec.rel.parent.name or "Loose"
-        return Decision(ONESHOTS, folder=(ONESHOTS, parent),
-                        bpm=tags.bpm, bpm_source="filename" if tags.bpm else "",
-                        key=tags.key, key_source="filename" if tags.key else "")
+        from .oneshots import classify_shot
+        typ, how = classify_shot(str(rec.rel), a.get("shot"))
+        d = Decision(ONESHOTS, folder=(ONESHOTS, typ),
+                     bpm=tags.bpm, bpm_source="filename" if tags.bpm else "",
+                     key=tags.key, key_source="filename" if tags.key else "")
+        d.shot_type = typ
+        if how == "sound":
+            d.flags.append(f"{typ.rstrip('s')} (guessed from sound)")
+        return d
 
     d = Decision("Sorted")
     review = False
@@ -124,7 +134,9 @@ def classify(rec: Record, s: Settings) -> Decision:
     det_bpm = fold_bpm(a.get("bpm", 0.0), s.bpm_min, s.bpm_max)
     bpm_conf = a.get("bpm_conf", 0.0)
     d.detected_bpm = det_bpm or None
-    if tags.bpm:
+    if ov_bpm:  # your fix wins over everything
+        d.bpm, d.bpm_source = float(ov_bpm), "you"
+    elif tags.bpm:
         d.bpm, d.bpm_source = tags.bpm, "filename"
         rel = compare_bpm(det_bpm, tags.bpm)
         if rel in ("wrong", "triplet") and bpm_conf >= s.bpm_conf_min:
@@ -140,7 +152,10 @@ def classify(rec: Record, s: Settings) -> Decision:
     key_conf = a.get("key_conf", 0.0)
     tonal = is_tonal(a)
     d.detected_key = det_key if tonal else None
-    if tags.key:
+    if ov_key or ov_nokey:  # your fix wins over everything
+        d.key, d.key_source = ov_key, "you"
+        d.no_key = ov_nokey
+    elif tags.key:
         d.key, d.key_source = tags.key, "filename"
         rel = compare_keys(det_key, tags.key)
         if tonal and rel in ("wrong", "fifth", "parallel") and key_conf >= s.key_conf_min:
@@ -157,6 +172,20 @@ def classify(rec: Record, s: Settings) -> Decision:
             d.flags.append("low key confidence")
     else:
         d.no_key = True
+
+    # A short sound with no steady beat (crash, riser, impact) is a one-shot
+    # even if it's longer than the one-shot limit, as long as we can tell
+    # what it is.
+    from .pipeline import SHOT_MAX_SECONDS
+    if not d.bpm and dur < SHOT_MAX_SECONDS and not rec.override:
+        from .oneshots import classify_shot
+        typ, how = classify_shot(str(rec.rel), a.get("shot"))
+        if typ != "Other":
+            shot = Decision(ONESHOTS, folder=(ONESHOTS, typ), key=d.key,
+                            key_source=d.key_source, shot_type=typ)
+            if how == "sound":
+                shot.flags.append(f"{typ.rstrip('s')} (guessed from sound)")
+            return shot
 
     bpm_part = bpm_folder(d.bpm) if d.bpm else NO_BPM
     key_part = d.key.name if d.key else (NO_KEY if d.no_key else KEY_UNKNOWN)

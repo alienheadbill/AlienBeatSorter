@@ -163,3 +163,86 @@ def test_tag_store(tmp_path):
     ts.remove(["/a.wav"], "Dark")
     assert ts.all()["/a.wav"] == {"favorites"}
     assert clean_tag("   ") == ""
+
+
+def test_your_fix_wins_over_name_and_detection(tmp_path):
+    from beatsorter.tags import TagStore
+    s = Settings()
+    analysis = {"analyzed": True, "duration": 60, "bpm": 71, "bpm_conf": 0.9,
+                "key_pc": 1, "key_mode": "minor", "key_conf": 0.9, "harm_ratio": 0.9, "key_r": 0.7}
+    rec = Record(Path("x/Nasty 142bpm Cm.wav"), Path("Nasty 142bpm Cm.wav"), 1,
+                 analysis=analysis, tags=parse_filename("Nasty 142bpm Cm.wav"))
+    assert classify(rec, s).folder == ("140-149 BPM", "C minor")  # name wins by default
+    ts = TagStore(tmp_path / "lib.db")
+    ts.set_override([str(rec.path)], bpm=71.0, key="F minor")
+    rec.override = ts.overrides()[str(rec.path)]
+    d = classify(rec, s)
+    assert d.folder == ("070-079 BPM", "F minor")
+    assert d.bpm_source == d.key_source == "you"
+    assert not any("tag" in f for f in d.flags)  # no name-vs-detection warnings on your fix
+    ts.set_override([str(rec.path)], key="none")
+    rec.override = ts.overrides()[str(rec.path)]
+    d = classify(rec, s)
+    assert d.folder == ("070-079 BPM", "No Key") and d.no_key
+    ts.set_override([str(rec.path)], clear_bpm=True, clear_key=True)
+    assert str(rec.path) not in ts.overrides()  # fully cleared
+
+
+def test_duplicate_keeps_labeled_original():
+    from beatsorter.duplicates import _rank
+    recs = [Record(Path("old/Clip bounce.wav"), Path("old/Clip bounce.wav"), 30_000_000,
+                   tags=parse_filename("Clip bounce.wav")),
+            Record(Path("Clip_88bpm_Em.mp3"), Path("Clip_88bpm_Em.mp3"), 3_600_000,
+                   tags=parse_filename("Clip_88bpm_Em.mp3")),
+            Record(Path("x/Beat.mp3"), Path("x/Beat.mp3"), 5, tags=parse_filename("Beat.mp3")),
+            Record(Path("y/Beat.wav"), Path("y/Beat.wav"), 9, tags=parse_filename("Beat.wav"))]
+    assert _rank(recs, [0, 1]) == [1, 0]  # labeled original beats a bigger WAV bounce
+    assert _rank(recs, [2, 3]) == [3, 2]  # no labels: WAV over MP3
+
+
+def test_fl_tags_merge_never_loses_user_tags(tmp_path, monkeypatch):
+    from beatsorter import fltags
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setattr(fltags, "fl_running", lambda: False)
+    monkeypatch.setattr(fltags, "app_dir", lambda: (tmp_path / "appdata").mkdir(exist_ok=True) or tmp_path / "appdata")
+    tags_file = tmp_path / "Tags"
+    original = ('@TagCase=*,Kick,808,"needs mix",fav\n'
+                '"d:\\samples\\kick 01.wav",Kick,fav\n'
+                '"d:\\beats sorted\\140-149 bpm\\f minor\\byakugon.mp3",fav\n'
+                '"D:\\Beats Sorted\\140-149 BPM\\F minor\\Byakugon.mp3",needs mix\n'  # same file, other case
+                'this line is not something we understand\n')
+    tags_file.write_text(original, encoding="utf-8")
+    byak = "D:\\Beats Sorted\\140-149 BPM\\F minor\\Byakugon.mp3"
+    roses = "D:\\Beats Sorted\\170-179 BPM\\F minor\\Roses.mp3"
+
+    # first sync: add BPM/key + a Beat Sorter tag ("fav" also exists as the user's FL tag)
+    st = fltags.sync(tags_file, {byak: {"140-149bpm", "Fm", "dark", "fav"}, roses: {"170-179bpm", "Fm"}})
+    tf = fltags.TagsFile.load(tags_file)
+    b = tf.entries[fltags.norm_path(byak)][1]
+    assert {"fav", "needs mix", "140-149bpm", "Fm", "dark"} <= set(b)
+    assert tf.entries[fltags.norm_path("d:\\samples\\kick 01.wav")][1] == ["Kick", "fav"]  # untouched
+    assert "this line is not something we understand" in tf.raw_keep
+    assert "Kick" in tf.header and "needs mix" in tf.header  # user's header tags kept
+    assert tags_file.read_text().startswith('@TagCase=*,Kick,808,"needs mix",fav')
+
+    # second sync: Byakugon un-tagged "dark" in Beat Sorter, Roses dropped entirely
+    fltags.sync(tags_file, {byak: {"140-149bpm", "Fm", "fav"}})
+    tf = fltags.TagsFile.load(tags_file)
+    b = tf.entries[fltags.norm_path(byak)][1]
+    assert "dark" not in b                      # our stale tag removed
+    assert "fav" in b and "needs mix" in b      # user's FL tags (even "fav", which we also want) kept
+    assert fltags.norm_path(roses) not in tf.entries or not tf.entries[fltags.norm_path(roses)][1]
+
+    # undo restores the file from before the last sync
+    before_second = tmp_path / "appdata" / "fl_tags_backups"
+    assert any(before_second.glob("Tags-*"))
+    assert fltags.undo_last() == str(tags_file)
+    assert "dark" in tags_file.read_text()      # back to after the first sync
+
+
+def test_fl_tags_refuses_while_fl_running(tmp_path, monkeypatch):
+    from beatsorter import fltags
+    monkeypatch.setattr(fltags, "fl_running", lambda: True)
+    with pytest.raises(RuntimeError):
+        fltags.sync(tmp_path / "Tags", {"x.wav": {"Fm"}})
+    assert not (tmp_path / "Tags").exists()

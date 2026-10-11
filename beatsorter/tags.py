@@ -30,6 +30,9 @@ class TagStore:
         self.conn.execute("CREATE TABLE IF NOT EXISTS tags ("
                           " path TEXT NOT NULL, tag TEXT NOT NULL,"
                           " PRIMARY KEY (path, tag))")
+        # Your BPM/key fixes. They win over file names and detection.
+        self.conn.execute("CREATE TABLE IF NOT EXISTS overrides ("
+                          " path TEXT PRIMARY KEY, bpm REAL, key TEXT)")
         self.conn.commit()
 
     def all(self) -> Dict[str, Set[str]]:
@@ -63,6 +66,36 @@ class TagStore:
     def remove(self, paths: Iterable[str], tag: str) -> None:
         self.conn.executemany("DELETE FROM tags WHERE path = ? AND tag = ?",
                               [(str(p), tag) for p in paths])
+        self.conn.commit()
+
+    # ---- BPM/key fixes ----
+    def overrides(self) -> Dict[str, dict]:
+        out: Dict[str, dict] = {}
+        for path, bpm, key in self.conn.execute("SELECT path, bpm, key FROM overrides"):
+            o = {}
+            if bpm:
+                o["bpm"] = float(bpm)
+            if key:
+                o["key"] = key
+            if o:
+                out[path] = o
+        return out
+
+    def set_override(self, paths: Iterable[str], bpm=None, key=None,
+                     clear_bpm: bool = False, clear_key: bool = False) -> None:
+        """Set (or clear) your BPM and/or key fix on files. key is a key
+        name like "C minor", or "none" for no key."""
+        for p in paths:
+            row = self.conn.execute("SELECT bpm, key FROM overrides WHERE path = ?",
+                                    (str(p),)).fetchone()
+            cur_bpm, cur_key = row if row else (None, None)
+            new_bpm = None if clear_bpm else (bpm if bpm is not None else cur_bpm)
+            new_key = None if clear_key else (key if key is not None else cur_key)
+            if new_bpm is None and new_key is None:
+                self.conn.execute("DELETE FROM overrides WHERE path = ?", (str(p),))
+            else:
+                self.conn.execute("INSERT OR REPLACE INTO overrides VALUES (?, ?, ?)",
+                                  (str(p), new_bpm, new_key))
         self.conn.commit()
 
     def close(self) -> None:
