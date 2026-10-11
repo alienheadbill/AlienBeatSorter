@@ -22,7 +22,7 @@ USING IT
 2. "Your beats": pick the folder with your beats.
    "Sorted folder": pick a NEW empty folder. Put it on the SAME DRIVE as
    your beats (e.g. D:\Beats -> D:\Beats Sorted) so no extra space is used.
-3. Click "1. Analyze". The first run takes a while (roughly 1-5 seconds
+3. Click "1. Analyze". The first run takes a while (about 3 seconds
    per beat, split across your CPU cores). Results are saved, so later runs
    only analyze new or changed files. You can Cancel and continue later.
 4. Look at the results. Click "Accuracy report" to see how detection
@@ -70,8 +70,9 @@ ABOUT THE SORTED FOLDER
 SETTINGS
 --------
 BPM range: detection can't always tell 70 from 140. Results are halved
-  or doubled to land in this range. "Suggest range from my tagged files"
-  picks the range that best matches the BPMs in your file names.
+  or doubled to land in this range. After each scan, Beat Sorter picks the
+  range that best matches the BPMs in your file names (needs at least 5
+  named beats; untick "Learn this range" to set it yourself).
 One-shots under: shorter files go to One-Shots without BPM/key folders.
 Min confidence: below these, a detected BPM/key goes to _Review.
 Use detected key for files without a key in the name: on by default.
@@ -82,17 +83,22 @@ Add BPM/key to file names inside Sorted: names the links like
 
 ACCURACY (be realistic)
 -----------------------
-BPM: on 18 of your beats, the tempo family was right on 17 (61% exact,
-  33% half/double-time like 71 vs 142, one 2/3 error). The BPM range
-  setting fixes most half/double errors: after analyzing, click
-  "Suggest range from my tagged files".
-Key: much harder. On 17 of your own tagged beats, detection matched the
-  name 41% of the time. Dark trap/drill beats often put the 808 on a
-  flat 2nd or tritone, which confuses standard key detection, and the
-  confidence score didn't reliably catch the misses. Files with the key
-  in the name are always sorted by the name, so this only affects files
-  without one.
-
+Key: three detectors vote: a neural network trained on thousands of
+  tracks (from the madmom research library) and two Essentia-style key
+  finders (the method behind many online key sites), one tuned for
+  electronic music. On 17 of your beats, with Tunebat's answer used where
+  it differed from the file name, the vote was right on 15 (88%). The old
+  detector got 10. Of the two misses, one is a beat named Fm where all
+  three hear F#m (not yet checked on Tunebat); the other is Em heard as Am.
+  Three of those beats were named a half-step off (Cm/Dm where Tunebat
+  and all three detectors say C#m/D#m). When all three detectors agree
+  against a name, Notes says "name may be off"; right-click > Use detected
+  key if your ears agree. Files are still sorted by their name otherwise.
+BPM: with the range learned from your names, 16 of 18 beats matched
+  exactly (89%). Misses: one beat named 84 detected as 168 (half/double),
+  one named 194 detected as 129 (a 2/3 "triplet" error).
+These numbers come from a small set of your own beats, so expect some
+  variation on others.
 
 BROWSING, TAGS AND PREVIEW (Library tab)
 ----------------------------------------
@@ -168,3 +174,12 @@ Run "Beat Sorter (with console).bat" to see error messages, or look in
 %LOCALAPPDATA%\BeatSorter\error.log.
 Cached results are in %LOCALAPPDATA%\BeatSorter\cache.db (delete it to
 force a full re-analysis).
+
+
+CREDITS
+-------
+Key network: Korzeniowski & Widmer, "Genre-Agnostic Key Classification
+with Convolutional Neural Networks" (ISMIR 2018), trained weights from the
+madmom library, license CC BY-NC-SA 4.0 (non-commercial use only).
+Key profiles and method after Essentia (Music Technology Group, UPF) and
+Faraldo et al. ("edma" profile).

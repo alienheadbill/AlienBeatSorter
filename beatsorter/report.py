@@ -6,7 +6,7 @@ import csv
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 from .classifier import Decision, detected_key, fold_bpm, is_tonal
 from .keys import compare_bpm, compare_keys
@@ -107,3 +107,21 @@ def suggest_bpm_range(records: List[Record], oneshot_seconds: float) -> Tuple[fl
         if rate > best[2] + 1e-9:
             best = (float(lo), float(hi), rate)
     return best
+
+
+MIN_LEARN_FILES = 5
+
+
+def learn_bpm_range(records: List[Record], s) -> Optional[Tuple[float, float, float, int, float]]:
+    """The suggested range, if it beats the current one on at least
+    MIN_LEARN_FILES files with a BPM in the name.
+    Returns (lo, hi, rate, n_files, current_rate) or None."""
+    cur = accuracy(records, s.bpm_min, s.bpm_max, s.oneshot_seconds)
+    if cur.bpm_total < MIN_LEARN_FILES:
+        return None
+    cur_rate = (cur.bpm_counts["exact"] + cur.bpm_counts["close"]) / cur.bpm_total
+    lo, hi, rate = suggest_bpm_range(records, s.oneshot_seconds)
+    if rate <= cur_rate + 1e-9 or (lo, hi) == (s.bpm_min, s.bpm_max):
+        return None
+    return lo, hi, rate, cur.bpm_total, cur_rate
+

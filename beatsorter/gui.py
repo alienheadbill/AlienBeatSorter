@@ -25,7 +25,7 @@ from .builder import (NeedsCopy, PlanItem, UnsafePath, add_items, build, check_f
 from .classifier import Decision, classify
 from .config import Settings
 from .pipeline import Record, analyze_library
-from .report import accuracy, suggest_bpm_range, write_csv
+from .report import accuracy, learn_bpm_range, suggest_bpm_range, write_csv
 from .tags import TagStore
 from .keys import PC_NAMES, Key, camelot, compatible
 from . import updater
@@ -84,6 +84,7 @@ class App(tk.Frame):
         self.kc_var = tk.StringVar(value=f"{self.s.key_conf_min:g}")
         self.detkey_var = tk.BooleanVar(value=self.s.use_detected_key)
         self.tagname_var = tk.BooleanVar(value=self.s.add_tags_to_names)
+        self.bpmauto_var = tk.BooleanVar(value=self.s.bpm_auto)
         for v in (self.lo_var, self.hi_var, self.os_var, self.bc_var, self.kc_var, self.detkey_var):
             v.trace_add("write", lambda *a: self._schedule_reclassify())
 
@@ -770,28 +771,31 @@ class App(tk.Frame):
         ttk.Label(c, style="CardMuted.TLabel",
                   text="Detected tempos are halved/doubled to land here (70 vs 140).").grid(
             row=2, column=0, columnspan=3, sticky="w")
+        ttk.Checkbutton(c, variable=self.bpmauto_var,
+                        text="Learn this range from my named beats after each scan").grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
-        section("Sorting", 3)
-        field("One-shots under", self.os_var, 4, "seconds")
-        field("Min BPM confidence", self.bc_var, 5, "below this → _Review")
-        field("Min key confidence", self.kc_var, 6, "below this → _Review")
+        section("Sorting", 4)
+        field("One-shots under", self.os_var, 5, "seconds")
+        field("Min BPM confidence", self.bc_var, 6, "below this → _Review")
+        field("Min key confidence", self.kc_var, 7, "below this → _Review")
         ttk.Checkbutton(c, variable=self.detkey_var,
                         text="Use detected key when a file has no key in its name").grid(
-            row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
+            row=8, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Label(c, style="CardMuted.TLabel",
                   text="Off: those files go to a \"Key unknown\" folder instead of a guessed key.").grid(
-            row=8, column=0, columnspan=3, sticky="w", padx=(24, 0))
+            row=9, column=0, columnspan=3, sticky="w", padx=(24, 0))
         ttk.Checkbutton(c, variable=self.tagname_var,
                         text="Add BPM/key to file names inside Sorted").grid(
-            row=9, column=0, columnspan=3, sticky="w", pady=(8, 0))
+            row=10, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Label(c, style="CardMuted.TLabel",
                   text="Only the copies in Sorted are renamed. Originals keep their names.").grid(
-            row=10, column=0, columnspan=3, sticky="w", padx=(24, 0))
+            row=11, column=0, columnspan=3, sticky="w", padx=(24, 0))
 
         ttk.Label(c, text=f"Beat Sorter v{__version__}", style="CardMuted.TLabel").grid(
-            row=11, column=0, columnspan=2, sticky="w", pady=(18, 0))
+            row=12, column=0, columnspan=2, sticky="w", pady=(18, 0))
         ttk.Button(c, text="Done", style="Accent.TButton", command=self._close_settings).grid(
-            row=11, column=2, sticky="e", pady=(18, 0))
+            row=12, column=2, sticky="e", pady=(18, 0))
         w.protocol("WM_DELETE_WINDOW", self._close_settings)
         w.update_idletasks()  # center over the main window
         x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
@@ -823,6 +827,7 @@ class App(tk.Frame):
         if not (20 <= s.bpm_min < s.bpm_max <= 300):
             return None
         s.add_tags_to_names = self.tagname_var.get()
+        s.bpm_auto = self.bpmauto_var.get()
         s.use_detected_key = self.detkey_var.get()
         s.source, s.output = self.src_var.get().strip(), self.out_var.get().strip()
         return s
@@ -976,6 +981,26 @@ class App(tk.Frame):
             lines += [f"  {n}\n      {why}" for n, why in acc.disagreements[:500]]
         txt.insert("1.0", "\n".join(lines))
         txt.configure(state="disabled")
+
+    def _learn_range(self) -> str:
+        """After a scan: pick the BPM range that matches the named beats
+        best (if that setting is on). Returns a status note or ""."""
+        s = self._read_settings()
+        if s is None or not s.bpm_auto or not self.records:
+            return ""
+        got = learn_bpm_range(self.records, s)
+        if not got:
+            return ""
+        lo, hi, rate, n, cur_rate = got
+        s.bpm_min, s.bpm_max = lo, hi
+        self.lo_var.set(f"{lo:g}")
+        self.hi_var.set(f"{hi:g}")
+        if self._reclass_job:  # the caller reclassifies right away
+            self.after_cancel(self._reclass_job)
+            self._reclass_job = None
+        s.save()
+        return (f"BPM range set to {lo:g}-{hi:g} from your named beats "
+                f"({rate:.0%} match, was {cur_rate:.0%})")
 
     def _suggest_range(self):
         s = self._read_settings()
@@ -1612,6 +1637,22 @@ class App(tk.Frame):
         self.status.set(f"BPM {'halved' if factor < 1 else 'doubled'} on {len(idx)} beat"
                         f"{'s' if len(idx) != 1 else ''}")
 
+    def _use_detected_key(self):
+        """One click: take the detected key for the selected beats (e.g. when
+        the name is a half-step off). Saved as your fix; originals untouched."""
+        n = 0
+        for i in self._selected():
+            d = self.decisions[i]
+            if d.detected_key and d.detected_key != d.key:
+                self.tags.set_override([str(self.records[i].path)], key=d.detected_key.name)
+                n += 1
+        if not n:
+            return
+        self.overrides = self.tags.overrides()
+        self._reclassify()
+        hint = "  ·  click Build sorted folder to move them in Sorted" if self._sorted_ready() else ""
+        self.status.set(f"Using the detected key on {n} beat{'s' if n != 1 else ''}{hint}")
+
     def _fix_dialog(self):
         idx = self._selected()
         if not idx:
@@ -1743,6 +1784,10 @@ class App(tk.Frame):
         m.add_command(label="✎  Fix BPM / key…", command=self._fix_dialog)
         m.add_command(label="BPM  ½×  (halve)", command=lambda: self._scale_bpm(0.5))
         m.add_command(label="BPM  2×  (double)", command=lambda: self._scale_bpm(2.0))
+        d = self.decisions[int(row)] if int(row) < len(self.decisions) else None
+        if d and d.detected_key and d.detected_key != d.key:
+            m.add_command(label=f"Use detected key ({d.detected_key.short})",
+                          command=self._use_detected_key)
         if any(str(self.records[i].path) in self.overrides for i in self._selected()):
             m.add_command(label="Reset to automatic BPM / key",
                           command=lambda: self._apply_fix(clear_bpm=True, clear_key=True))
@@ -1876,7 +1921,10 @@ class App(tk.Frame):
                 elif kind == "analyzed":
                     self.records = msg[1]
                     self._set_busy(False)
+                    learned = self._learn_range()
                     self._reclassify()
+                    if learned:
+                        self.status.set(self.status.get() + " · " + learned)
                     if self.cancel_evt.is_set():
                         self.status.set("Cancelled. Finished files are saved; Scan again to "
                                         "continue where you left off.")

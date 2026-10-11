@@ -7,6 +7,7 @@ mode is "major" or "minor". Enharmonic spellings collapse to one name
 
 from __future__ import annotations
 
+import re
 from typing import NamedTuple, Optional
 
 # Producer-friendly spelling: sharps for C#/F#, flats for the rest.
@@ -60,6 +61,13 @@ def parse_key_name(text: str) -> Optional[Key]:
             return Key(pc, "major")
         if t == f"{nm} minor" or t == nm + "m":
             return Key(pc, "minor")
+    # other spellings: "D# minor", "G#m", "A♯ major", "Bbmaj"
+    m = re.fullmatch(r"([A-Ga-g])([#♯b♭]?)\s*(major|maj|minor|min|m)?", t)
+    if m:
+        pc = note_to_pc(m.group(1), m.group(2))
+        if pc is not None:
+            minor = (m.group(3) or "").lower() in ("minor", "min", "m")
+            return Key(pc, "minor" if minor else "major")
     return None
 
 

@@ -159,14 +159,19 @@ def classify(rec: Record, s: Settings) -> Decision:
         d.key, d.key_source = tags.key, "filename"
         rel = compare_keys(det_key, tags.key)
         if tonal and rel in ("wrong", "fifth", "parallel") and key_conf >= s.key_conf_min:
-            d.flags.append(f"key tag {tags.key.short}, detected {det_key.short}")
+            if a.get("key_votes") == 3:
+                d.flags.append(f"key tag {tags.key.short}, all 3 detectors hear {det_key.short}: "
+                               "name may be off")
+            else:
+                d.flags.append(f"key tag {tags.key.short}, detected {det_key.short}")
     elif not tonal:
         d.no_key = True
     elif det_key and not s.use_detected_key:
         d.flags.append(f"key not in name (detector guessed {det_key.short})")
     elif det_key:
         d.key, d.key_source = det_key, "detected"
-        d.flags.append("key not in name: detected (often wrong on dark trap beats)")
+        votes = a.get("key_votes")
+        d.flags.append("key not in name: detected" + (" (all 3 detectors agree)" if votes == 3 else ""))
         if key_conf < s.key_conf_min:
             review = True
             d.flags.append("low key confidence")

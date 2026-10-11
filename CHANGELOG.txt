@@ -1,3 +1,11 @@
+1.7.0
+- Much better key detection: three detectors now vote (a neural network trained on thousands of tracks, plus two Essentia-style key finders, the kind of engine online key sites use). On your beats, checked against Tunebat: 15 of 17 right, up from 10 of 17.
+- About 3x faster analysis (around 3 seconds per beat).
+- "Name may be off": when all three detectors agree on a different key than the file name, the Notes column says so. Right-click > Use detected key fixes it in one click.
+- BPM range is learned from your named beats after each scan (on your beats: 89% exact, up from 61%). Turn off in Settings.
+- Key names like D#m, G#m and A# are now understood everywhere.
+- Your library is re-analyzed once after updating, because detection changed.
+
 1.6.0
 - Sync tags to FL Studio: your tags, BPM ranges, keys and one-shot types show up as filters in FL's own Browser (More > Sync tags to FL Studio). Keeps the tags you made in FL.
 - Fix BPM / key: correct a wrong key or BPM, or halve/double a BPM. Your fixes win over names and detection.

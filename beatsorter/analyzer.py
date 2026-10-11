@@ -17,11 +17,13 @@ from typing import Any, Dict, Tuple
 import numpy as np
 
 # Bump when the analysis changes so cached results get recomputed.
-ANALYSIS_VERSION = 5
+ANALYSIS_VERSION = 6
 
-SR = 22050
+SR = 22050  # tempo analysis
+KEY_SR = 44100  # key analysis (what the key models were made for)
 MAX_SECONDS = 90.0  # analyze at most the first 90 seconds of a file
 MIN_ANALYZE_SECONDS = 1.0  # shorter files are one-shots: skip analysis
+TONALITY_SECONDS = 30.0  # same as classifier.FULL_TRACK_SECONDS
 TEMPO_HOP = 128  # ~5.8 ms frames, fine enough for ~0.1 BPM refinement
 
 # Key profiles tuned for electronic/produced music ("edma", Faraldo et al.).
@@ -110,11 +112,11 @@ def detect_bpm(y: np.ndarray, sr: int) -> Dict[str, float]:
 MINOR_BIAS = 0.10
 
 
-def detect_key(y: np.ndarray, sr: int) -> Dict[str, Any]:
-    """Key from the harmonic part of the audio, ignoring the two lowest
-    octaves (below ~130 Hz). 808s often sit on a note other than the key's
-    root (a flat 2nd or a tritone in dark trap), and including them made
-    detection pick keys a semitone too high."""
+def _tonality(y: np.ndarray, sr: int) -> Dict[str, Any]:
+    """Older chroma-based key estimate, now only used on short files (loops)
+    to tell melodic loops from drum loops: harm_ratio and key_r feed the
+    "No Key" test in classifier.is_tonal. Uses the harmonic part of the
+    audio above ~130 Hz."""
     import librosa
 
     y_h = librosa.effects.harmonic(y, margin=1.0)
@@ -148,6 +150,41 @@ def detect_key(y: np.ndarray, sr: int) -> Dict[str, Any]:
     return {"key_pc": pc, "key_mode": mode, "key_r": round(r1, 3),
             "key_margin": round(margin, 3), "key_conf": round(conf, 3),
             "harm_ratio": round(harm_ratio, 3), "chroma_peak": round(chroma_peak, 3)}
+
+
+# Key ensemble. Three detectors, each strong on its own:
+#   - a neural network trained on thousands of tracks (keycnn, madmom's model)
+#   - Essentia-style HPCP with the "edma" (electronic music) profile
+#   - Essentia-style HPCP with the classic Krumhansl profile
+# Their scores are added: log(network probability) + W * (both correlations).
+# On the user's beats (truth from Tunebat / file names) the combination was
+# right more often than any one detector. W was chosen on that small set;
+# results were the same for W from 8 to 30.
+KEY_W = 15.0
+# How far ahead the winner must be (in combined score) for full confidence.
+KEY_MARGIN_FULL = 6.0
+
+
+def detect_key(y44: np.ndarray) -> Dict[str, Any]:
+    """Key by the ensemble. y44: mono audio at 44.1 kHz."""
+    from . import hpcpkey, keycnn
+
+    cnn = keycnn.probs_by_key(y44)
+    hp = hpcpkey.key_scores(y44)
+    edma, krum = hp["edma"], hp["krumhansl"]
+    combined = np.log(cnn + 1e-6) + KEY_W * (edma + krum)
+    best = int(np.argmax(combined))
+    second = float(np.sort(combined)[-2])
+    margin = float(combined[best]) - second
+    key = hpcpkey.index_key(best)
+    votes = sum(int(np.argmax(v)) == best for v in (cnn, edma, krum))
+    name = lambda v: hpcpkey.index_key(int(np.argmax(v))).name  # noqa: E731
+    return {"key_pc": key.pc, "key_mode": key.mode,
+            "key_conf": round(float(np.clip(margin / KEY_MARGIN_FULL, 0, 1)), 3),
+            "key_margin": round(margin, 3), "key_votes": votes,
+            "cnn_key": name(cnn), "cnn_prob": round(float(cnn.max()), 3),
+            "hpcp_edma": name(edma), "hpcp_krumhansl": name(krum),
+            "hpcp_r": round(float(edma[best]), 3)}
 
 
 def _wav_header_broken(path: str, reported_seconds: float) -> bool:
@@ -232,17 +269,19 @@ def _analyze(path: str, out: Dict[str, Any]) -> Dict[str, Any]:
             return out
         if broken:
             x = x[: int(MAX_SECONDS * native_sr)]
-            y = librosa.resample(x, orig_sr=native_sr, target_sr=SR)
-            sr = SR
+            y44 = librosa.resample(x, orig_sr=native_sr, target_sr=KEY_SR)
         else:
-            y, sr = librosa.load(path, sr=SR, mono=True, duration=MAX_SECONDS)
-        if y.size == 0 or not np.any(np.abs(y) > 1e-4):
+            y44, _ = librosa.load(path, sr=KEY_SR, mono=True, duration=MAX_SECONDS)
+        if y44.size == 0 or not np.any(np.abs(y44) > 1e-4):
             out.update(bpm=0.0, bpm_conf=0.0, key_pc=-1, key_mode="",
                        key_conf=0.0, harm_ratio=0.0, analyzed=True,
                        error="silent or empty audio")
             return out
-        out.update(detect_bpm(y, sr))
-        out.update(detect_key(y, sr))
+        y = librosa.resample(y44, orig_sr=KEY_SR, target_sr=SR)
+        out.update(detect_bpm(y, SR))
+        if dur < TONALITY_SECONDS:  # loops: is it melodic or drums only?
+            out.update(_tonality(y, SR))
+        out.update(detect_key(y44))
         out["analyzed"] = True
     except Exception as e:  # corrupt file, unsupported codec, etc.
         out["error"] = f"{type(e).__name__}: {e}"[:300]

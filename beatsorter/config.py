@@ -22,6 +22,7 @@ class Settings:
     output: str = ""
     bpm_min: float = 70.0  # preferred BPM range; detected tempos are
     bpm_max: float = 180.0  # halved/doubled to land inside it
+    bpm_auto: bool = True  # after each scan, learn the range from named beats
     oneshot_seconds: float = 2.0  # shorter files go to One-Shots
     bpm_conf_min: float = 0.35  # below this, a detected BPM goes to _Review
     key_conf_min: float = 0.25  # below this, a detected key goes to _Review
