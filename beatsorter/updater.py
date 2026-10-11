@@ -60,11 +60,16 @@ def config() -> Tuple[str, str]:
 
 
 def _ssl_context() -> ssl.SSLContext:
+    """Trust the computer's own certificate store (on Windows, the Windows
+    store, which also covers networks with their own security proxy) plus
+    certifi's standard bundle."""
+    ctx = ssl.create_default_context()
     try:
         import certifi
-        return ssl.create_default_context(cafile=certifi.where())
+        ctx.load_verify_locations(certifi.where())
     except Exception:
-        return ssl.create_default_context()
+        pass
+    return ctx
 
 
 def _get(url: str, timeout: float = 20) -> bytes:
