@@ -1,3 +1,6 @@
+1.7.1
+- Fixed "Create desktop shortcut.bat" (it failed with PowerShell errors).
+
 1.7.0
 - Much better key detection: three detectors now vote (a neural network trained on thousands of tracks, plus two Essentia-style key finders, the kind of engine online key sites use). On your beats, checked against Tunebat: 15 of 17 right, up from 10 of 17.
 - About 3x faster analysis (around 3 seconds per beat).
