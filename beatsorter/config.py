@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 
@@ -35,6 +35,9 @@ class Settings:
     fl_sync_key: bool = True
     fl_sync_types: bool = True
     fl_sync_mine: bool = True
+    layout: str = "bpm_key"  # how Sorted nests folders (see organizer.LAYOUTS)
+    folder_names: dict = field(default_factory=dict)  # your renames: "140-149 BPM" -> "Fast"
+    number_my_folders: bool = False  # "01 Album" so FL shows My Folders in your order
 
     @classmethod
     def load(cls) -> "Settings":

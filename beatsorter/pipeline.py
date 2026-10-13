@@ -114,3 +114,28 @@ def _shot_pass(records: List[Record], cache: Cache, mtimes: Dict[str, float],
         if n % 50 == 0 or n == len(need):
             cache.commit()
             report("Measuring one-shots", n, len(need), None)
+
+
+def load_cached(source: Path, exclude: Optional[List[Path]] = None) -> "tuple[List[Record], int]":
+    """Your library as of the last scan, straight from saved results (no
+    analysis, so it's quick). Returns (records, n_new): files that are new
+    or changed since then aren't included, only counted, so the app can
+    analyze just those. After an update that changed detection, the older
+    results are shown meanwhile and counted in n_new (they'll be redone)."""
+    from .analyzer import ANALYSIS_VERSION
+    files = list(scan(source, exclude=exclude))
+    records: List[Record] = []
+    new = 0
+    cache = Cache(app_dir() / "cache.db")
+    try:
+        for f in files:
+            cached = cache.get(str(f.path), f.size, f.mtime, any_version=True)
+            if cached is None or cached.get("version") != ANALYSIS_VERSION:
+                new += 1
+            if cached is None:
+                continue
+            records.append(Record(f.path, f.path.relative_to(source), f.size,
+                                  analysis=cached, tags=parse_filename(f.path.name)))
+    finally:
+        cache.close()
+    return records, new

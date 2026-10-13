@@ -1,3 +1,11 @@
+1.9.0
+- New Sorted tab: your library as a folder tree. Drag beats onto a BPM/key folder to move them (saved as your fix), into your own folders, or onto a tag.
+- My Folders: make your own folders (nested, any names, any order), e.g. Album ideas or Send to artists. They show up in Sorted\My Folders for FL Studio. Optional numbering keeps your order in FL.
+- Change the folder layout: BPM > Key, Key > BPM, Camelot > BPM, BPM only, Key only, or one folder.
+- Rename any folder, including the automatic ones (e.g. 140-149 BPM to Fast trap).
+- Changes update the Sorted folder right away; only what changed is touched.
+- Your beats load as soon as the app opens; only new or changed beats get analyzed.
+
 1.8.0
 - Essentia, the open-source engine behind many online key finders, now votes on every key. It runs through deno (already installed for YouTube downloads); if it can't run, the other detectors carry on without it.
 - On your beats, checked against Tunebat: 16 of 17 keys right (1.7.0: 15, 1.6.0: 10).

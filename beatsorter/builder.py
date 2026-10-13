@@ -125,13 +125,22 @@ def tag_folder(out: Path, tag: str) -> Path:
     return out / TAGS_FOLDER / _clean(tag)
 
 
+MY_FOLDERS = "My Folders"
+
+
 def plan(records: List[Record], decisions: List[Decision], out: Path,
-         add_tags_to_names: bool, tags: Optional[Dict[str, set]] = None) -> List[PlanItem]:
-    """Where every file goes in Sorted: its BPM/key folder, plus one link
-    in Tags/<tag>/ for each of your tags on it."""
+         add_tags_to_names: bool, tags: Optional[Dict[str, set]] = None,
+         names: Optional[Dict[str, str]] = None,
+         folders: Optional[Dict[str, List[Tuple[str, ...]]]] = None) -> List[PlanItem]:
+    """Where every file goes in Sorted: its BPM/key folder, one link in
+    Tags/<tag>/ for each of your tags on it, and one in My Folders/... for
+    each of your folders it's in. names: your folder renames
+    ("140-149 BPM" -> "Fast trap")."""
     items: List[PlanItem] = []
     used: set = set()
     tags = tags or {}
+    names = names or {}
+    folders = folders or {}
 
     def add(src: Path, folder: Path, stem: str, ext: str):
         dest = folder / (stem + ext)
@@ -145,11 +154,13 @@ def plan(records: List[Record], decisions: List[Decision], out: Path,
     for rec, d in zip(records, decisions):
         stem, ext = link_stem(rec, d, add_tags_to_names), rec.path.suffix
         if d.folder:
-            add(rec.path, out.joinpath(*[_clean(p) for p in d.folder]), stem, ext)
+            add(rec.path, out.joinpath(*[_clean(names.get(p, p)) for p in d.folder]), stem, ext)
         if d.category in ("Error", "Not analyzed"):
             continue
         for t in sorted(tags.get(str(rec.path), ())):
             add(rec.path, tag_folder(out, t), stem, ext)
+        for fp in folders.get(str(rec.path), ()):
+            add(rec.path, out.joinpath(MY_FOLDERS, *[_clean(p) for p in fp]), stem, ext)
     return items
 
 
@@ -256,8 +267,107 @@ def build(items: List[PlanItem], source: Path, out: Path, allow_copy: bool = Fal
         if progress and (n % 25 == 0 or n == len(items)):
             progress(n, len(items))
 
-    (out / MANIFEST).write_text(json.dumps({"source": str(source), "files": made},
+    (out / MANIFEST).write_text(json.dumps({"source": str(source), "files": made,
+                                            "mode": "links" if can_link else "copies"},
                                            indent=0), encoding="utf-8")
+    return res
+
+
+def _prune_empty(out: Path, source: Path) -> None:
+    for root, dirs, files in sorted(os.walk(out), key=lambda t: -len(t[0])):
+        rp = Path(root)
+        if rp.resolve() == out.resolve():
+            continue
+        _guard(rp, out, source)
+        try:
+            if not any(rp.iterdir()):
+                rp.rmdir()
+        except OSError:
+            pass
+
+
+def _points_to(dest: Path, src: Path) -> bool:
+    """Is this Sorted entry still the right file? Hard links: same file.
+    Copies: same size (the name already matches)."""
+    try:
+        if os.stat(dest).st_nlink > 1:
+            return os.path.samefile(dest, src)
+        return dest.stat().st_size == src.stat().st_size
+    except OSError:
+        return False
+
+
+def sync(items: List[PlanItem], source: Path, out: Path, allow_copy: bool = False) -> BuildResult:
+    """Make an existing Sorted folder match the plan, changing only what
+    differs (fast enough to run after every drag in the Sorted tab).
+    Same safety rules as build(): only files Beat Sorter listed in its
+    manifest are removed, and nothing outside the Sorted folder is touched."""
+    source, out = source.resolve(), out.resolve()
+    check_folders(source, out)
+    out.mkdir(parents=True, exist_ok=True)
+    if not (out / MARKER).exists():
+        (out / MARKER).write_text("Made by Beat Sorter. Safe to delete this whole folder;\n"
+                                  "your original files are elsewhere and untouched.\n",
+                                  encoding="utf-8")
+    mf = out / MANIFEST
+    try:
+        manifest = json.loads(mf.read_text(encoding="utf-8"))
+    except Exception:
+        manifest = {"source": str(source), "files": []}
+    listed = {rel.lower(): rel for rel in manifest.get("files", [])}
+    wanted: Dict[str, PlanItem] = {}
+    for it in items:
+        _guard(it.dest, out, source)
+        wanted[str(it.dest.relative_to(out)).lower()] = it
+
+    res = BuildResult(mode="hard links")
+    keep: List[str] = []
+    for low, rel in listed.items():  # remove what's no longer wanted (or wrong)
+        p = out / rel
+        it = wanted.get(low)
+        if it is not None and p.is_file() and _points_to(p, it.src):
+            keep.append(str(it.dest.relative_to(out)))
+            del wanted[low]
+            continue
+        try:
+            _guard(p, out, source)
+            if p.is_file():
+                os.unlink(_long(p))
+                res.removed_old += 1
+        except UnsafePath:
+            raise
+        except OSError as e:
+            res.errors.append(f"{p.name}: {e}")
+            keep.append(rel)
+
+    copies = manifest.get("mode") == "copies" or allow_copy
+    can_link = None
+    for it in wanted.values():  # add what's missing
+        try:
+            if it.dest.exists():  # something of yours is there: leave it
+                res.skipped += 1
+                continue
+            it.dest.parent.mkdir(parents=True, exist_ok=True)
+            if can_link is None:
+                can_link, why = _links_work(it.src, out)
+                if not can_link and not copies:
+                    raise NeedsCopy(sum(i.src.stat().st_size for i in wanted.values()
+                                        if i.src.exists()), why)
+            if can_link:
+                os.link(_long(it.src), _long(it.dest))
+                res.linked += 1
+            else:
+                shutil.copy2(_long(it.src), _long(it.dest))
+                res.copied += 1
+                res.mode = "copies"
+            keep.append(str(it.dest.relative_to(out)))
+        except (UnsafePath, NeedsCopy):
+            raise
+        except Exception as e:
+            res.errors.append(f"{it.src.name}: {e}")
+    manifest["files"] = keep
+    mf.write_text(json.dumps(manifest, indent=0), encoding="utf-8")
+    _prune_empty(out, source)
     return res
 
 

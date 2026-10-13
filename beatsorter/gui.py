@@ -21,10 +21,11 @@ from . import downloader, intake
 from . import theme as T
 from . import player as player_mod
 from .builder import (NeedsCopy, PlanItem, UnsafePath, add_items, build, check_folders,
-                      link_stem, plan, remove_tag_links, tag_folder)
+                      link_stem, plan, remove_tag_links, sync, tag_folder)
 from .classifier import Decision, classify
 from .config import Settings
-from .pipeline import Record, analyze_library
+from .folders import FolderStore
+from .pipeline import Record, analyze_library, load_cached
 from .report import accuracy, learn_bpm_range, suggest_bpm_range, write_csv
 from .tags import TagStore
 from .keys import PC_NAMES, Key, camelot, compatible
@@ -67,6 +68,11 @@ class App(tk.Frame):
         self.tags = TagStore()
         self.tag_map = self.tags.all()
         self.overrides = self.tags.overrides()  # your BPM/key fixes
+        self.folders = FolderStore()  # My Folders
+        self.current_tab = "library"
+        self._sync_job = None
+        self._sync_running = False
+        self._sync_again = False
         self.player = player_mod.Player()
         # downloads
         self.dl_jobs: "queue.Queue" = queue.Queue()
@@ -96,6 +102,7 @@ class App(tk.Frame):
         self.after(200, self._tick_player)
         self.after(400, self._show_update_result)
         self.after(2500, lambda: self._check_updates(quiet=True))
+        self.after(300, self._startup_load)
 
     # ================= layout =================
     def _build_ui(self):
@@ -140,7 +147,8 @@ class App(tk.Frame):
         tabbar = tk.Frame(body, bg=T.BG)
         tabbar.pack(fill="x", pady=(14, 0))
         self.tab_btns = {}
-        for key, label in (("library", "Library"), ("download", "Download from YouTube")):
+        for key, label in (("library", "Library"), ("sorted", "Sorted"),
+                           ("download", "Download from YouTube")):
             b = ttk.Button(tabbar, text=label, style="Tab.TButton",
                            command=lambda k=key: self._show_tab(k))
             b.pack(side="left", padx=(0, 6))
@@ -327,6 +335,11 @@ class App(tk.Frame):
         self.empty.place(relx=0.5, rely=0.56, anchor="center")
         self._update_toolbar()
 
+        srt = tk.Frame(body, bg=T.BG)
+        self.tab_frames["sorted"] = srt
+        from .gui_sorted import SortedTab
+        self.sorted_tab = SortedTab(self, srt)
+
         dl = tk.Frame(body, bg=T.BG)
         self.tab_frames["download"] = dl
         self._build_download_tab(dl)
@@ -338,8 +351,13 @@ class App(tk.Frame):
             fr.pack_forget()
             self.tab_btns[k].configure(style="TabOn.TButton" if k == key else "Tab.TButton")
         self.tab_frames[key].pack(fill="both", expand=True)
+        self.current_tab = key
         if key == "download":
             self._update_dl_hint()
+        elif key == "sorted":
+            self.sorted_tab.refresh()
+        else:
+            self._update_toolbar()
 
     # ================= download tab =================
     DL_COLUMNS = [
@@ -849,6 +867,9 @@ class App(tk.Frame):
         self.decisions = [classify(r, s) for r in self.records]
         self._refresh_table()
         self._summarize()
+        if hasattr(self, "sorted_tab"):
+            self.sorted_tab.refresh()
+        self._schedule_sync()
 
     # ================= folder pickers =================
     def _pick_src(self):
@@ -879,8 +900,6 @@ class App(tk.Frame):
         exclude = [Path(s.output)] if s.output else []
         self._set_busy(True)
         self.cancel_evt.clear()
-        self.records, self.decisions = [], []
-        self._refresh_table()
 
         def progress(stage, done, total, rec):
             self.q.put(("progress", stage, done, total))
@@ -915,7 +934,7 @@ class App(tk.Frame):
         s.save()
         self._attach_overrides()
         decisions = [classify(r, s) for r in self.records]
-        items = plan(self.records, decisions, out, s.add_tags_to_names, tags=self.tag_map)
+        items = self._plan(decisions, out)
         if not confirmed:
             n_rev = sum(d.category == "Review" for d in decisions)
             msg = (f"Build the Sorted folder at:\n{out}\n\n"
@@ -938,6 +957,78 @@ class App(tk.Frame):
                 self.q.put(("error", str(e)))
             except Exception as e:
                 self.q.put(("error", f"Build failed: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ================= live Sorted folder =================
+    def _plan(self, decisions, out: Path):
+        s = self.s
+        return plan(self.records, decisions, out, s.add_tags_to_names, tags=self.tag_map,
+                    names=s.folder_names, folders=self.folders.memberships(s.number_my_folders))
+
+    def _organize_changed(self, msg: str):
+        """Something was reorganized in the Sorted tab."""
+        self.tag_map = self.tags.all()
+        self.overrides = self.tags.overrides()
+        self._reclassify()
+        note = "  ·  updating your Sorted folder…" if self._sorted_ready() else \
+            "  ·  build the Sorted folder (Library tab) to see this in FL Studio"
+        self.status.set(msg + note)
+
+    def _schedule_sync(self, delay: int = 700):
+        """Update the Sorted folder to match (if it's been built). Debounced,
+        runs in the background, changes only what differs."""
+        if not self.records or self._sorted_ready() is None:
+            return
+        if self._sync_job:
+            self.after_cancel(self._sync_job)
+        self._sync_job = self.after(delay, self._run_sync)
+
+    def _run_sync(self):
+        self._sync_job = None
+        out = self._sorted_ready()
+        if out is None or not self.records:
+            return
+        if self.busy or self._sync_running:
+            self._sync_again = True
+            self._sync_job = self.after(1500, self._run_sync)
+            return
+        try:
+            items = self._plan(self.decisions, out)
+        except Exception as e:
+            self.status.set(f"Couldn't update the Sorted folder: {e}")
+            return
+        src = Path(self.s.source)
+        self._sync_running = True
+
+        def work():
+            try:
+                res = sync(items, src, out)
+                self.q.put(("synced", res))
+            except NeedsCopy as e:
+                self.q.put(("sync_done_flag",))
+                self.q.put(("needs_copy", e))
+            except Exception as e:
+                self.q.put(("sync_failed", str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ================= startup =================
+    def _startup_load(self):
+        """Show your library from last time right away, then analyze only
+        what's new or changed."""
+        src = self.s.source
+        if not src or not Path(src).is_dir() or self.records or self.busy:
+            return
+        exclude = [Path(self.s.output)] if self.s.output else []
+        self.status.set("Loading your beats…")
+
+        def work():
+            try:
+                recs, new = load_cached(Path(src), exclude=exclude)
+                self.q.put(("cached", recs, new))
+            except Exception as e:
+                self.q.put(("cached", [], -1))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1044,7 +1135,7 @@ class App(tk.Frame):
             f"{d.bpm:g}" if d.bpm else "",
             f"{d.key_label}  {camelot(d.key)}" if d.key else d.key_label,
             ", ".join(sorted(self._tags_of(r), key=str.lower)),
-            "/".join(d.folder) if d.folder else d.category,
+            "/".join(self.s.folder_names.get(p, p) for p in d.folder) if d.folder else d.category,
             "; ".join(d.flags),
         )
 
@@ -1140,6 +1231,8 @@ class App(tk.Frame):
         self.count_lbl.configure(text=f"{len(rows)} of {len(self.records)} beats")
         self._rebuild_chips()
         self._update_toolbar()
+        if getattr(self, "sorted_tab", None) is not None and self.current_tab == "sorted":
+            self.sorted_tab.refresh_list()
 
     def _sort_by(self, col):
         if self.sort_col == col:
@@ -1149,6 +1242,9 @@ class App(tk.Frame):
         self._refresh_table()
 
     def _selected(self) -> List[int]:
+        """Selected beats in the tab you're looking at (Library or Sorted)."""
+        if self.current_tab == "sorted" and hasattr(self, "sorted_tab"):
+            return self.sorted_tab.selected()
         return [int(i) for i in self.tree.selection() if i.isdigit() and int(i) < len(self.records)]
 
     def _update_toolbar(self):
@@ -1382,7 +1478,8 @@ class App(tk.Frame):
         self._attach_overrides()
         decisions = [classify(r, self.s) for r in self.records]
         res = {}
-        for it in plan(self.records, decisions, out, self.s.add_tags_to_names, tags={}):
+        for it in plan(self.records, decisions, out, self.s.add_tags_to_names, tags={},
+                       names=self.s.folder_names):
             if TAGS_FOLDER not in it.dest.relative_to(out).parts[:1]:
                 res.setdefault(str(it.src), str(it.dest))
         return res
@@ -1621,7 +1718,7 @@ class App(tk.Frame):
         self._reclassify()
         n = len(paths)
         what = "Reset" if clear_bpm and clear_key and bpm is None and key is None else "Fixed"
-        hint = "  ·  click Build sorted folder to move them in Sorted" if self._sorted_ready() else ""
+        hint = "  ·  Sorted folder updated" if self._sorted_ready() else ""
         self.status.set(f"{what} {n} beat{'s' if n != 1 else ''}{hint}")
 
     def _scale_bpm(self, factor: float):
@@ -1650,7 +1747,7 @@ class App(tk.Frame):
             return
         self.overrides = self.tags.overrides()
         self._reclassify()
-        hint = "  ·  click Build sorted folder to move them in Sorted" if self._sorted_ready() else ""
+        hint = "  ·  Sorted folder updated" if self._sorted_ready() else ""
         self.status.set(f"Using the detected key on {n} beat{'s' if n != 1 else ''}{hint}")
 
     def _fix_dialog(self):
@@ -1918,6 +2015,32 @@ class App(tk.Frame):
                         self.status.set(f"{word}… {done} of {total} files")
                     else:
                         self.status.set(stage)
+                elif kind == "cached":
+                    recs, new = msg[1], msg[2]
+                    if not self.records and not self.busy:
+                        self.records = recs
+                        self._set_busy(False)
+                        self._reclassify()
+                        if recs:
+                            self.status.set(f"Loaded {len(recs)} beats from last time.")
+                    if new > 0 and not self.busy:
+                        self.status.set(f"Checking {new} new or changed beat"
+                                        f"{'s' if new != 1 else ''}…")
+                        self._analyze()
+                elif kind == "synced":
+                    res = msg[1]
+                    self._sync_running = False
+                    if res.linked or res.copied or res.removed_old:
+                        cur = self.status.get().replace("  ·  updating your Sorted folder…", "")
+                        self.status.set(cur + "  ·  Sorted folder updated")
+                    if res.errors:
+                        self.status.set(f"Sorted folder updated, {len(res.errors)} problem(s): "
+                                        f"{res.errors[0]}")
+                elif kind == "sync_done_flag":
+                    self._sync_running = False
+                elif kind == "sync_failed":
+                    self._sync_running = False
+                    self.status.set(f"Couldn't update the Sorted folder: {msg[1]}")
                 elif kind == "analyzed":
                     self.records = msg[1]
                     self._set_busy(False)

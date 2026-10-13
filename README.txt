@@ -100,6 +100,27 @@ BPM: with the range learned from your names, 16 of 18 beats matched
 These numbers come from a small set of your own beats, so expect some
   variation on others.
 
+SORTED TAB (organize your way)
+------------------------------
+Your library opens as soon as the app starts (no rescan; new or changed
+beats are analyzed by themselves). The Sorted tab shows it as folders:
+* Left: folders. Click one to see its beats on the right.
+* Drag beats onto a BPM/key folder to move them there. Beat Sorter saves
+  it as your fix (halving/doubling the BPM if that fits, or asking).
+* My Folders: right-click > New folder. Make folders inside folders, drag
+  beats in, drag folders onto each other, Alt+Up/Down to reorder. A beat
+  can be in many folders. Delete removes the folder only, never beats.
+* Layout (top left): BPM > Key, Key > BPM, Camelot > BPM, BPM only, Key
+  only, or everything in one folder.
+* Right-click any folder > Rename (F2). Renaming an automatic folder like
+  "140-149 BPM" renames it everywhere it appears.
+* "Keep My Folders order in FL" adds 01, 02... to their names in Sorted,
+  since FL lists folders alphabetically.
+* Every change updates the Sorted folder right away (once it's been built
+  from the Library tab), so FL Studio's Browser matches. Refresh FL's
+  Browser to see it. Your original files are never moved or changed.
+
+
 BROWSING, TAGS AND PREVIEW (Library tab)
 ----------------------------------------
 * Filters on the left: search, BPM range (e.g. 140 to 150), key buttons,

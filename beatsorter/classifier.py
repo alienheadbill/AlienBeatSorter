@@ -192,11 +192,13 @@ def classify(rec: Record, s: Settings) -> Decision:
                 shot.flags.append(f"{typ.rstrip('s')} (guessed from sound)")
             return shot
 
+    from .organizer import arrange
     bpm_part = bpm_folder(d.bpm) if d.bpm else NO_BPM
     key_part = d.key.name if d.key else (NO_KEY if d.no_key else KEY_UNKNOWN)
+    parts = arrange(bpm_part, key_part, d.key, getattr(s, "layout", "bpm_key"))
     if review:
         d.category = "Review"
-        d.folder = (REVIEW, bpm_part, key_part)
+        d.folder = (REVIEW,) + parts
     else:
-        d.folder = (bpm_part, key_part)
+        d.folder = parts
     return d

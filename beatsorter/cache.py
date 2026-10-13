@@ -22,14 +22,18 @@ class Cache:
         )
         self.conn.commit()
 
-    def get(self, path: str, size: int, mtime: float) -> Optional[Dict[str, Any]]:
+    def get(self, path: str, size: int, mtime: float,
+            any_version: bool = False) -> Optional[Dict[str, Any]]:
+        """Saved analysis if the file is unchanged. any_version: also accept
+        results from an older version of the analysis."""
         row = self.conn.execute(
             "SELECT size, mtime, version, data FROM results WHERE path=?", (path,)
         ).fetchone()
         if not row:
             return None
         r_size, r_mtime, r_ver, data = row
-        if r_size != size or abs(r_mtime - mtime) > 1e-3 or r_ver != ANALYSIS_VERSION:
+        if r_size != size or abs(r_mtime - mtime) > 1e-3 or (
+                r_ver != ANALYSIS_VERSION and not any_version):
             return None
         return json.loads(data)
 
