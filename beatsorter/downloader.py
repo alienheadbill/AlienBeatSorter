@@ -89,9 +89,8 @@ def _base_opts() -> dict:
 
 def available() -> Tuple[bool, str]:
     """Whether downloading can work here, and why not."""
-    try:
-        import yt_dlp  # noqa: F401
-    except Exception:
+    import importlib.util
+    if importlib.util.find_spec("yt_dlp") is None:
         return False, "The downloader isn't installed. Run setup.bat again."
     if not _ffmpeg():
         return False, "ffmpeg isn't installed. Run setup.bat again."

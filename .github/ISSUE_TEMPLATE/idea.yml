@@ -1,0 +1,12 @@
+name: Idea or comment
+description: Suggest a feature or share feedback
+title: "[Idea] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: What would make Beat Sorter better for you?
+    validations:
+      required: true

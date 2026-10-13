@@ -1,0 +1,27 @@
+# Reports sent from the app start with [Bug] or [Idea]; label them so the
+# Issues tab can be filtered.
+name: Label reports
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const t = context.payload.issue.title || "";
+            const labels = [];
+            if (t.startsWith("[Bug]")) labels.push("bug");
+            if (t.startsWith("[Idea]")) labels.push("enhancement");
+            if (labels.length) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.payload.issue.number, labels });
+            }

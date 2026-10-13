@@ -1,0 +1,25 @@
+name: Something's wrong
+description: Report a problem with Beat Sorter
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Tip: in Beat Sorter, **Report a problem** (top right) fills this in for you, including the technical details."
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What were you doing right before? What did you expect instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Beat Sorter version
+      description: Shown in Settings (bottom left), e.g. 1.9.2
+  - type: textarea
+    id: details
+    attributes:
+      label: Error messages or screenshots
+      description: Paste any error text, or drag a screenshot here.

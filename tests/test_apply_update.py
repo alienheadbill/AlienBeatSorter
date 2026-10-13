@@ -77,3 +77,81 @@ def test_full_update_and_leftover_cleanup(tmp_path, no_wait, monkeypatch):
     assert (app / "_backup" / "1.0" / "beatsorter" / "version.py").exists()
     assert not (app / "beatsorter.old-123").exists()
     assert "complete" in log.read_text()
+
+
+class FakeProc:
+    def __init__(self, on_start=None):
+        self.alive = True
+        if on_start:
+            on_start()
+
+    def poll(self):
+        return None if self.alive else 0
+
+    def kill(self):
+        self.alive = False
+
+
+def _two_versions(tmp_path):
+    app, new = tmp_path / "app", tmp_path / "new"
+    _tree(app, {"beatsorter/version.py": '__version__ = "1.0"', "requirements.txt": "x"})
+    _tree(new, {"beatsorter/version.py": '__version__ = "2.0"', "requirements.txt": "x"})
+    return app, new
+
+
+def test_new_version_that_opens_is_kept(tmp_path, monkeypatch, no_wait):
+    app, new = _two_versions(tmp_path)
+    log = tmp_path / "update.log"
+    monkeypatch.setattr(au, "relaunch", lambda a: FakeProc(
+        lambda: (tmp_path / "started.txt").write_text(au.version_of(a))))
+    au.main(["x", str(app), str(new), "0", str(log)])
+    assert au.version_of(app) == "2.0"
+    assert (tmp_path / "update_result.txt").read_text().startswith("ok")
+
+
+def test_new_version_that_wont_open_is_rolled_back(tmp_path, monkeypatch, no_wait):
+    app, new = _two_versions(tmp_path)
+    log = tmp_path / "update.log"
+    launched = []
+
+    def relaunch(a):
+        launched.append(au.version_of(a))
+        p = FakeProc()
+        if len(launched) == 1:
+            p.alive = False  # the new version crashes on start
+        return p
+
+    monkeypatch.setattr(au, "relaunch", relaunch)
+    au.main(["x", str(app), str(new), "0", str(log)])
+    assert launched == ["2.0", "1.0"]  # tried the new one, then started the old one
+    assert au.version_of(app) == "1.0"
+    res = (tmp_path / "update_result.txt").read_text()
+    assert res.startswith("failed") and "didn't open" in res
+
+
+def test_update_while_essentia_helper_is_running(tmp_path, monkeypatch):
+    """This morning's bug: on Windows the running key helper held the app
+    folder, so an update couldn't replace it. The helper must never hold
+    the app's own folder, so swapping the folder works while it runs."""
+    import shutil
+    import numpy as np
+    from beatsorter import essentiakey
+    real_pkg = __import__("pathlib").Path(essentiakey.__file__).parent
+    app = tmp_path / "app"
+    shutil.copytree(real_pkg, app / "beatsorter",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    monkeypatch.setattr(essentiakey, "SCRIPT", app / "beatsorter" / "assets" / "essentia" / "essentia_key.mjs")
+    monkeypatch.setattr(essentiakey, "_proc", None)
+    monkeypatch.setattr(essentiakey, "_broken", False)
+    if not essentiakey.available():
+        pytest.skip("deno not installed")
+    t = np.arange(44100 * 3) / 44100
+    out = essentiakey.detect((0.2 * np.sin(2 * np.pi * 220 * t)).astype("float32"))
+    assert out, "helper should be running"
+    try:
+        new = tmp_path / "new"
+        shutil.copytree(app / "beatsorter", new / "beatsorter")
+        monkeypatch.setattr(au.time, "sleep", lambda s: None)
+        au.replace_dir(new / "beatsorter", app / "beatsorter")  # must not hit "in use"
+    finally:
+        essentiakey._stop()

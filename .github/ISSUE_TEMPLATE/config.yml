@@ -1,0 +1,5 @@
+blank_issues_enabled: true  # the app's "Report a problem" button opens a pre-filled issue
+contact_links:
+  - name: Email instead
+    url: mailto:alienheadbill@gmail.com
+    about: No GitHub account? Email your report or idea.

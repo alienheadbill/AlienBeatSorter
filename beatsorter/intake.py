@@ -6,14 +6,13 @@ classify -> link into the Sorted folder (if one is set up).
 
 from __future__ import annotations
 
-import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 from .analyzer import analyze_file
-from .builder import PlanItem, UnsafePath, add_items, check_folders
+from .builder import UnsafePath, add_items, check_folders, plan
 from .cache import Cache
 from .classifier import Decision, classify
 from .config import Settings, app_dir
@@ -40,11 +39,13 @@ def download_folder(settings: Settings) -> Path:
 def make_record(path: Path, source: Path, text_tags: FilenameTags) -> Record:
     """Analyze a file and build its Record. Tags read from the video text
     win over tags parsed from the (cleaned-up) file name."""
-    analysis = analyze_file(str(path))
     st = path.stat()
     cache = Cache(app_dir() / "cache.db")
     try:
-        cache.put(str(path), st.st_size, st.st_mtime, analysis)
+        analysis = cache.get(str(path), st.st_size, st.st_mtime)  # already analyzed?
+        if analysis is None:
+            analysis = analyze_file(str(path))
+            cache.put(str(path), st.st_size, st.st_mtime, analysis)
     finally:
         cache.close()
     name_tags = parse_filename(path.name)
@@ -68,11 +69,15 @@ def sort_into_library(rec: Record, d: Decision, settings: Settings) -> tuple:
         check_folders(Path(settings.source), out)
     except UnsafePath as e:
         return None, str(e)
-    dest = out.joinpath(*d.folder) / rec.path.name
-    res = add_items([PlanItem(rec.path, dest)], Path(settings.source), out)
+    # same folder and link name a full build would use (incl. your renames)
+    items = plan([rec], [d], out, settings.add_tags_to_names,
+                 names=getattr(settings, "folder_names", {}))
+    if not items:
+        return None, f"Not sorted ({d.category.lower()})."
+    res = add_items(items[:1], Path(settings.source), out)
     if res.errors:
         return None, res.errors[0]
-    return dest, ""
+    return items[0].dest, ""
 
 
 def process(url: str, settings: Settings,

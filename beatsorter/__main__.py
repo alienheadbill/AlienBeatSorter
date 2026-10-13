@@ -8,12 +8,12 @@ if __name__ == "__main__":
     except Exception as e:  # broken install: say so instead of closing silently
         import traceback
         msg = ("Beat Sorter couldn't start because some of its files are missing or "
-               f"damaged ({e}).\n\nTo repair it, download the latest version from\n"
-               "https://github.com/alienheadbill/AlienBeatSorter\n(Code > Download ZIP) "
-               "and copy its files over your Beat Sorter folder.\n"
+               f"damaged ({e}).\n\nTo repair it, download\n"
+               "https://github.com/alienheadbill/AlienBeatSorter/archive/refs/heads/release.zip\n"
+               "unzip it, and copy its files over your Beat Sorter folder.\n"
                "Your beats, tags and settings are not affected.")
         print(traceback.format_exc(), file=sys.stderr)
-        if sys.platform == "win32":
+        if sys.platform == "win32" and "--smoke-test" not in sys.argv:
             import ctypes
             ctypes.windll.user32.MessageBoxW(None, msg, "Beat Sorter", 0x10)
         else:

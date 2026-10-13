@@ -1,3 +1,12 @@
+1.9.3
+- Report a problem (top right): send a problem or idea as a GitHub issue or an email, with technical details you can see first. Error messages offer it too.
+- Safer updates: if a new version doesn't open, the previous one is put back automatically. Leftover helpers are closed before files are replaced.
+- Updates now come only from versions that passed automatic tests on a real Windows PC.
+- Fixed: after a failed update, the message could wrongly say the old version was restored.
+- Fixed: cancelling a scan could briefly remove the unscanned beats from your Sorted folder.
+- Fixed: downloaded beats now land in renamed folders right away, and re-downloads don't re-analyze.
+- Ctrl+arrow keys no longer move the player while you're typing in a search box.
+
 1.9.2
 - Fixed: an update could leave Beat Sorter unable to open on Windows (a helper program still had the app folder open while it was being replaced). Updates now wait until the folder is free and never leave it half-replaced.
 - If Beat Sorter ever can't start, it now says why instead of closing silently.

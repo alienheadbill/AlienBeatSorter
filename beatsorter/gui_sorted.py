@@ -346,7 +346,6 @@ class SortedTab:
         self._update_buttons()
 
     def _update_buttons(self):
-        n = len(self.selected())
         p = self.app.player
         idx = self.selected()
         sel_loaded = bool(idx) and self.app.records[idx[0]].path == p.path

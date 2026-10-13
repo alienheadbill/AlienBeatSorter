@@ -195,6 +195,10 @@ Your beats, Sorted folder, tags and settings are never touched.
 
 IF SOMETHING GOES WRONG
 -----------------------
+Click "Report a problem" (top right) to send a problem or an idea. It
+opens a pre-filled GitHub issue (free GitHub account) or an email, and
+shows you the technical details first (your folder names are hidden).
+Error messages offer the same button.
 Run "Beat Sorter (with console).bat" to see error messages, or look in
 %LOCALAPPDATA%\BeatSorter\error.log.
 Cached results are in %LOCALAPPDATA%\BeatSorter\cache.db (delete it to

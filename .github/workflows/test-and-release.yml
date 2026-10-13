@@ -1,0 +1,61 @@
+# Every push: run all tests on a real Windows PC (and Linux). Only if they
+# all pass on main does the `release` branch move forward, and `release`
+# is the only thing the app's updater installs. See RELEASING.md.
+name: Test and release
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      LOCALAPPDATA: ${{ github.workspace }}/ci-appdata
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Linux system packages (screen + audio libraries)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libportaudio2 libsndfile1
+      - name: Install Beat Sorter's packages (same as setup.bat)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest pyflakes
+      - name: Check the code for mistakes (undefined names, typos)
+        run: python -m pyflakes beatsorter
+      - name: Tests (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest -v
+      - name: Tests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest -v
+      - name: App opens through the real startup path (Windows)
+        if: runner.os == 'Windows'
+        run: python -m beatsorter --smoke-test
+      - name: App opens through the real startup path (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m beatsorter --smoke-test
+
+  release:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish to users (move the release branch to this tested commit)
+        run: git push origin HEAD:refs/heads/release --force

@@ -101,15 +101,21 @@ class App(tk.Frame):
         self.after(100, self._poll)
         self.after(200, self._tick_player)
         self.after(400, self._show_update_result)
-        self.after(2500, lambda: self._check_updates(quiet=True))
+        if "--smoke-test" not in sys.argv:
+            self.after(2500, lambda: self._check_updates(quiet=True))
         self.after(300, self._startup_load)
+        self.after(1000, self._mark_started)
 
     # ================= layout =================
     def _build_ui(self):
         self.header = T.Header(self, self.f)
         self.header.pack(fill="x")
-        ttk.Button(self, text="⚙  Settings", style="Ghost.TButton",
-                   command=self._open_settings).place(relx=1.0, x=-20, y=20, anchor="ne")
+        corner = tk.Frame(self, bg=T.BG)
+        corner.place(relx=1.0, x=-20, y=20, anchor="ne")
+        ttk.Button(corner, text="Report a problem", style="Ghost.TButton",
+                   command=lambda: self._report()).pack(side="left", padx=(0, 6))
+        ttk.Button(corner, text="⚙  Settings", style="Ghost.TButton",
+                   command=self._open_settings).pack(side="left")
 
         body = tk.Frame(self, bg=T.BG, padx=20, pady=4)
         body.pack(fill="both", expand=True)
@@ -187,6 +193,9 @@ class App(tk.Frame):
         self.more_menu.add_command(label=f"Check for updates  (you have v{__version__})",
                                    command=lambda: self._check_updates(quiet=False))
         self.more_menu.add_command(label="Undo last update", command=self._rollback)
+        self.more_menu.add_separator()
+        self.more_menu.add_command(label="Report a problem or send an idea…",
+                                   command=lambda: self._report())
 
         # --- progress + status ---
         self.pbar = T.Progress(lib)
@@ -339,10 +348,12 @@ class App(tk.Frame):
         self._player_state = None
         root = self.root
         root.bind("<Escape>", lambda e: self._stop_play() if self.player.path else None)
-        root.bind("<Control-Left>", lambda e: self._seek_by(-10))
-        root.bind("<Control-Right>", lambda e: self._seek_by(10))
-        root.bind("<Control-Up>", lambda e: self._play_neighbor(-1))
-        root.bind("<Control-Down>", lambda e: self._play_neighbor(1))
+        def keys(fn):  # player shortcuts, except while typing in a text box
+            return lambda e: None if isinstance(e.widget, (tk.Entry, ttk.Entry)) else fn()
+        root.bind("<Control-Left>", keys(lambda: self._seek_by(-10)))
+        root.bind("<Control-Right>", keys(lambda: self._seek_by(10)))
+        root.bind("<Control-Up>", keys(lambda: self._play_neighbor(-1)))
+        root.bind("<Control-Down>", keys(lambda: self._play_neighbor(1)))
         self._show_tab("library")
 
     # ================= tabs =================
@@ -746,13 +757,16 @@ class App(tk.Frame):
         if not r:
             return
         status, old, new, err = r
-        if status == "ok":
+        # Only report what's actually true for the version running now (a
+        # result from before a manual reinstall is no longer accurate).
+        if status == "ok" and __version__ == new:
             self.status.set(f"Updated to v{new}.")
             messagebox.showinfo("Beat Sorter", f"Updated from v{old} to v{new}.")
-        else:
+        elif status == "failed" and __version__ == old:
             messagebox.showerror("Beat Sorter",
-                                 f"The update to v{new} didn't work, so v{old} was restored. "
-                                 f"Nothing else changed.\n\n{err[:600]}")
+                                 f"The update to v{new} didn't work, so v{old} was put back. "
+                                 f"Nothing else changed. You can try again later, or use "
+                                 f"More > Report a problem.\n\n{err[:600]}")
 
     def _show_more(self):
         b = self.more_btn
@@ -996,6 +1010,12 @@ class App(tk.Frame):
             self._sync_again = True
             self._sync_job = self.after(1500, self._run_sync)
             return
+        if any(d.category == "Not analyzed" for d in self.decisions):
+            # a cancelled/partial scan: syncing now would drop those beats'
+            # links from Sorted until the next scan, so wait for a full one
+            self.status.set(self.status.get().replace("  ·  updating your Sorted folder…", "")
+                            + "  ·  Sorted folder updates after the scan finishes")
+            return
         try:
             items = self._plan(self.decisions, out)
         except Exception as e:
@@ -1016,7 +1036,20 @@ class App(tk.Frame):
 
         threading.Thread(target=work, daemon=True).start()
 
+    # ================= feedback =================
+    def _report(self, kind: str = "problem", error_text: str = ""):
+        from .gui_feedback import open_report
+        return open_report(self, kind, error_text)
+
     # ================= startup =================
+    def _mark_started(self):
+        """Tell the updater this version opened fine (see apply_update)."""
+        try:
+            from .config import app_dir
+            (app_dir() / "started.txt").write_text(__version__, encoding="utf-8")
+        except OSError:
+            pass
+
     def _startup_load(self):
         """Show your library from last time right away, then analyze only
         what's new or changed."""
@@ -1031,7 +1064,7 @@ class App(tk.Frame):
                 recs, new = load_cached(Path(src), exclude=exclude)
                 self.q.put(("cached", recs, new))
             except Exception as e:
-                self.q.put(("cached", [], -1))
+                self.q.put(("cached_failed", str(e)))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1272,7 +1305,6 @@ class App(tk.Frame):
         self.key_filter &= set(keys)
         self._chip_grid(self.key_chips_frame, [(k, k, keys[k]) for k in order], self.key_filter, cols=4)
         if keys:
-            from .keys import parse_key_name
             on = self.compat_on
             sw = tk.Label(self.key_chips_frame, cursor="hand2", padx=8, pady=3, font=self.f["small"],
                           text=("✓ " if on else "+ ") + "compatible keys",
@@ -2092,6 +2124,9 @@ class App(tk.Frame):
                         self.status.set(f"Checking {new} new or changed beat"
                                         f"{'s' if new != 1 else ''}…")
                         self._analyze()
+                elif kind == "cached_failed":
+                    self.status.set(f"Couldn't load last time's results ({msg[1]}). "
+                                    "Click Scan beats.")
                 elif kind == "synced":
                     res = msg[1]
                     self._sync_running = False
@@ -2195,7 +2230,12 @@ def _dark_title_bar(root: tk.Tk) -> None:
 
 
 def run():
+    """Start the app. With --smoke-test: open the real window, let it run a
+    few seconds, then quit with exit code 0 (worked) or 1 (an error), no
+    pop-ups. Used by the automatic tests before every release."""
     import traceback
+    smoke = "--smoke-test" in sys.argv
+    errors: list = []
 
     try:  # drag-and-drop into FL Studio needs a tkdnd-enabled window
         from tkinterdnd2 import TkinterDnD
@@ -2203,14 +2243,28 @@ def run():
     except Exception:
         root = tk.Tk()
 
+    app_ref = []
+
     def report(exc, val, tb):
-        p = _log_error("".join(traceback.format_exception(exc, val, tb)))
-        messagebox.showerror("Beat Sorter", f"Something went wrong: {val}\n\nDetails saved to:\n{p}")
+        text = "".join(traceback.format_exception(exc, val, tb))
+        if smoke:
+            errors.append(text)
+            print(text, file=sys.stderr)
+            return
+        p = _log_error(text)
+        if app_ref and messagebox.askyesno(
+                "Beat Sorter", f"Something went wrong: {val}\n\nDetails saved to:\n{p}\n\n"
+                               "Report this problem so it can be fixed?", icon="error"):
+            app_ref[0]._report("problem", text[-3000:])
 
     root.report_callback_exception = report
     try:
-        _start(root)
+        app_ref.append(_start(root))
     except Exception as e:  # make startup problems visible (pythonw has no console)
+        if smoke:
+            print(traceback.format_exc(), file=sys.stderr)
+            print("SMOKE TEST FAILED")
+            sys.exit(1)
         p = _log_error(traceback.format_exc())
         try:
             messagebox.showerror("Beat Sorter", f"Beat Sorter couldn't start: {e}\n\n"
@@ -2218,6 +2272,15 @@ def run():
         finally:
             root.destroy()
         return
+    if smoke:
+        def finish():
+            app = app_ref[0]
+            ok = not errors and app.winfo_exists()
+            print(f"SMOKE TEST {'OK' if ok else 'FAILED'}: v{__version__}, "
+                  f"{len(app.records)} beats loaded, tabs {list(app.tab_frames)}")
+            root.destroy()
+            sys.exit(0 if ok else 1)
+        root.after(int(float(os.environ.get("BEATSORTER_SMOKE_SECONDS", "6")) * 1000), finish)
     root.mainloop()
 
 
@@ -2227,7 +2290,7 @@ def _start(root):
     icons = [i for i in icons if i]
     if icons:
         root.iconphoto(True, *icons)  # window + taskbar icon
-    App(root, fonts)
+    app = App(root, fonts)
     root.geometry("1180x800")
     if sys.platform == "win32":
         try:
@@ -2235,3 +2298,4 @@ def _start(root):
         except tk.TclError:
             pass
     _dark_title_bar(root)
+    return app
