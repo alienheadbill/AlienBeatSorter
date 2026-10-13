@@ -113,7 +113,6 @@ def new_tk():
 
 
 def open_app(monkeypatch):
-    import tkinter as tk
     from beatsorter import gui, theme as T
     monkeypatch.setattr(gui.messagebox, "askyesno", lambda *a, **k: False)
     monkeypatch.setattr(gui.messagebox, "showinfo", lambda *a, **k: None)
