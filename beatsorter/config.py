@@ -37,7 +37,10 @@ class Settings:
     fl_sync_mine: bool = True
     layout: str = "bpm_key"  # how Sorted nests folders (see organizer.LAYOUTS)
     folder_names: dict = field(default_factory=dict)  # your renames: "140-149 BPM" -> "Fast"
-    number_my_folders: bool = False  # "01 Album" so FL shows My Folders in your order
+    number_my_folders: bool = False
+    player_volume: float = 0.9
+    player_loop: bool = False
+    player_autoplay: bool = False  # play the next beat when one ends  # "01 Album" so FL shows My Folders in your order
 
     @classmethod
     def load(cls) -> "Settings":

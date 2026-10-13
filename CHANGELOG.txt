@@ -1,3 +1,8 @@
+1.9.1
+- New player bar at the bottom of every tab: play/pause, stop, previous/next beat, a seek bar you can click or drag, volume, Loop and Autoplay.
+- Fixed: a beat started from the Sorted tab couldn't be stopped there.
+- Keys: Space play/pause, Esc stop, Ctrl+Left/Right jump 10 seconds, Ctrl+Up/Down previous/next beat.
+
 1.9.0
 - New Sorted tab: your library as a folder tree. Drag beats onto a BPM/key folder to move them (saved as your fix), into your own folders, or onto a tag.
 - My Folders: make your own folders (nested, any names, any order), e.g. Album ideas or Send to artists. They show up in Sorted\My Folders for FL Studio. Optional numbering keeps your order in FL.

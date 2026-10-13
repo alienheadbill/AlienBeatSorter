@@ -127,6 +127,10 @@ BROWSING, TAGS AND PREVIEW (Library tab)
   and your tags. Click a key or tag button to filter; click again to clear.
   Several tags = beats that have all of them.
 * Play: double-click a beat, press Space, or use the Play button.
+  The player bar at the bottom (every tab) has play/pause, stop,
+  previous/next beat, a seek bar (click or drag), volume, Loop (repeat the
+  beat) and Autoplay (next beat when one ends). Keys: Space play/pause,
+  Esc stop, Ctrl+Left/Right jump 10 s, Ctrl+Up/Down previous/next beat.
 * Tag: select one or more beats (Ctrl/Shift-click) and click "+ Tag", or
   right-click. Tags are saved by Beat Sorter and never change your files.
   Once the Sorted folder is built, tagging/untagging updates

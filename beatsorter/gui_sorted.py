@@ -326,9 +326,10 @@ class SortedTab:
                                 d.key.short if d.key else "", f"{d.bpm:g}" if d.bpm else "")).lower()
                 if term not in hay:
                     continue
-            playing = app.player.path is not None and app.player.path == r.path
+            marker = app._play_marker(r.path)
+            playing = bool(marker)
             where = " / ".join(org.display(p, self.names) for p in d.folder) if d.folder else d.category
-            rows.append((i, ("▶" if playing else "", name, f"{d.bpm:g}" if d.bpm else "",
+            rows.append((i, (marker, name, f"{d.bpm:g}" if d.bpm else "",
                              f"{d.key_label}  {camelot(d.key)}" if d.key else d.key_label,
                              tags, where), playing, d.category == "Review"))
         if not self.node.startswith("my:"):  # My Folders keep the order you added them
@@ -346,7 +347,11 @@ class SortedTab:
 
     def _update_buttons(self):
         n = len(self.selected())
-        self.play_btn.configure(text="■  Stop" if self.app.player.path and not n else "▶  Play")
+        p = self.app.player
+        idx = self.selected()
+        sel_loaded = bool(idx) and self.app.records[idx[0]].path == p.path
+        playing = (sel_loaded or not idx) and p.path is not None and p.active()
+        self.play_btn.configure(text="❚❚  Pause" if playing else "▶  Play")
 
     # ================= organizing actions =================
     def _changed(self, msg: str):
@@ -545,8 +550,12 @@ class SortedTab:
             self.list.selection_set(row)
         idx = self.selected()
         m = self._menu()
-        playing = self.app.player.path == self.app.records[idx[0]].path
-        m.add_command(label="■  Stop" if playing else "▶  Play", command=self.app._toggle_play)
+        p = self.app.player
+        loaded = p.path == self.app.records[idx[0]].path
+        m.add_command(label="❚❚  Pause" if loaded and p.active() else "▶  Play",
+                      command=self.app._toggle_play)
+        if p.path is not None:
+            m.add_command(label="■  Stop", command=self.app._stop_play)
         fm = self._menu()
         self._folders_menu(fm, idx)
         m.add_cascade(label="Add to folder", menu=fm)

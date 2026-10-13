@@ -290,17 +290,6 @@ class App(tk.Frame):
         self.count_lbl = ttk.Label(tb, text="", style="Muted.TLabel")
         self.count_lbl.pack(side="right")
 
-        self.np = tk.Frame(right, bg=T.SURFACE, highlightthickness=1, highlightbackground=T.BORDER,
-                           padx=12, pady=8)  # now-playing bar (shown while playing)
-        self.np_title = tk.Label(self.np, bg=T.SURFACE, fg=T.ACCENT, font=self.f["bold"], anchor="w")
-        self.np_title.pack(side="left")
-        self.np_time = tk.Label(self.np, bg=T.SURFACE, fg=T.MUTED, font=self.f["small"])
-        self.np_time.pack(side="right")
-        ttk.Button(self.np, text="■  Stop", style="Card.TButton", command=self._stop_play).pack(
-            side="right", padx=(0, 12))
-        self.np_bar = T.Progress(self.np, height=3)
-        self.np_bar.pack(side="left", fill="x", expand=True, padx=14)
-
         tf = tk.Frame(right, bg=T.SURFACE, highlightthickness=1, highlightbackground=T.BORDER)
         tf.pack(fill="both", expand=True, pady=(0, 6))
         self.table_frame = tf
@@ -343,6 +332,17 @@ class App(tk.Frame):
         dl = tk.Frame(body, bg=T.BG)
         self.tab_frames["download"] = dl
         self._build_download_tab(dl)
+
+        from .gui_player import TransportBar
+        self.transport = TransportBar(self, body)
+        self.transport.pack(side="bottom", fill="x", pady=(4, 8))
+        self._player_state = None
+        root = self.root
+        root.bind("<Escape>", lambda e: self._stop_play() if self.player.path else None)
+        root.bind("<Control-Left>", lambda e: self._seek_by(-10))
+        root.bind("<Control-Right>", lambda e: self._seek_by(10))
+        root.bind("<Control-Up>", lambda e: self._play_neighbor(-1))
+        root.bind("<Control-Down>", lambda e: self._play_neighbor(1))
         self._show_tab("library")
 
     # ================= tabs =================
@@ -1128,9 +1128,8 @@ class App(tk.Frame):
         return self.tag_map.get(str(r.path), set())
 
     def _row(self, r: Record, d: Decision):
-        playing = self.player.path is not None and self.player.path == r.path
         return (
-            "▶" if playing else "",
+            self._play_marker(r.path),
             str(r.rel),
             f"{d.bpm:g}" if d.bpm else "",
             f"{d.key_label}  {camelot(d.key)}" if d.key else d.key_label,
@@ -1253,10 +1252,12 @@ class App(tk.Frame):
             b.configure(state="normal" if n else "disabled")
         if n == 0:
             self.play_btn.configure(state="normal" if self.player.path else "disabled")
-        playing_sel = n and self.player.path is not None and \
-            self.records[self._selected()[0]].path == self.player.path
-        self.play_btn.configure(text="■  Stop" if playing_sel or (not n and self.player.path)
-                                else "▶  Play")
+        sel_loaded = n and self.records[self._selected()[0]].path == self.player.path
+        if sel_loaded or not n:
+            playing = self.player.active()
+        else:
+            playing = False
+        self.play_btn.configure(text="❚❚  Pause" if playing and self.player.path else "▶  Play")
 
     # ---- filter chips ----
     def _rebuild_chips(self):
@@ -1874,8 +1875,11 @@ class App(tk.Frame):
             self.tree.selection_set(row)
         m = self._menu()
         r = self.records[int(row)]
-        playing = self.player.path == r.path
-        m.add_command(label="■  Stop" if playing else "▶  Play", command=self._toggle_play)
+        loaded = self.player.path == r.path
+        m.add_command(label="❚❚  Pause" if loaded and self.player.active() else "▶  Play",
+                      command=self._toggle_play)
+        if self.player.path is not None:
+            m.add_command(label="■  Stop", command=self._stop_play)
         m.add_cascade(label="Add tag", menu=self._add_tag_menu())
         m.add_separator()
         m.add_command(label="✎  Fix BPM / key…", command=self._fix_dialog)
@@ -1903,46 +1907,104 @@ class App(tk.Frame):
 
     # ---- playback ----
     def _toggle_play(self, force_play: bool = False):
+        """Play button / Space: play the selected beat, or pause/resume it if
+        it's the one loaded. force_play (double-click, Enter): start the
+        selected beat from the beginning."""
         idx = self._selected()
-        if not idx:
-            if self.player.path and not force_play:
-                self._stop_play()
-            return
-        r = self.records[idx[0]]
-        if self.player.path == r.path and not force_play:
-            self._stop_play()
-            return
+        r = self.records[idx[0]] if idx else None
+        if r is not None and (force_play or self.player.path != r.path):
+            self._start_play(r)
+        elif self.player.path is not None:
+            self.player.toggle_pause()
+        self._player_changed()
+
+    def _transport_play(self):
+        """The big play/pause button in the player bar."""
+        if self.player.path is not None:
+            self.player.toggle_pause()
+            self._player_changed()
+        else:
+            self._toggle_play()
+
+    def _start_play(self, r: Record):
         ok, why = player_mod.available()
         if not ok:
             messagebox.showerror("Beat Sorter", why)
             return
-        self.np_title.configure(text=f"Loading  {r.path.name}")
-        self.np_time.configure(text="")
-        self._show_np(True)
         self.player.play(r.path,
                          on_started=lambda dur: self.q.put(("play_started", r.path, dur)),
                          on_error=lambda msg: self.q.put(("play_error", msg)))
-        self._refresh_table()
+        self._player_changed()
 
     def _stop_play(self):
         self.player.stop()
-        self._show_np(False)
-        self._refresh_table()
+        self._player_changed()
 
-    def _show_np(self, show: bool):
-        if show:
-            self.np.pack(fill="x", pady=(0, 8), before=self.table_frame)
+    def _seek_by(self, seconds: float):
+        if self.player.duration:
+            self.player.seek(self.player.position() + seconds)
+            self._player_changed()
+
+    def _visible_list(self):
+        """(treeview, row ids in order) of the beat list you're looking at."""
+        if self.current_tab == "sorted":
+            tv = self.sorted_tab.list
         else:
-            self.np.pack_forget()
+            tv = self.tree
+        return tv, [i for i in tv.get_children() if i.isdigit()]
+
+    def _play_neighbor(self, step: int):
+        """Previous/next beat in the visible list (from the one playing, or
+        the selection)."""
+        tv, rows = self._visible_list()
+        if not rows:
+            return
+        cur = None
+        if self.player.path is not None:
+            cur = next((n for n, i in enumerate(rows)
+                        if self.records[int(i)].path == self.player.path), None)
+        if cur is None:
+            sel = [i for i in tv.selection() if i in rows]
+            cur = rows.index(sel[0]) if sel else (-1 if step > 0 else len(rows))
+        nxt = cur + step
+        if not 0 <= nxt < len(rows):
+            return
+        iid = rows[nxt]
+        tv.selection_set(iid)
+        tv.see(iid)
+        self._start_play(self.records[int(iid)])
+
+    def _now_playing_label(self, path: Path) -> str:
+        for r, d in zip(self.records, self.decisions):
+            if r.path == path:
+                bits = [path.name]
+                if d.bpm:
+                    bits.append(f"{d.bpm:g} BPM")
+                if d.key:
+                    bits.append(d.key.short)
+                return "  ·  ".join(bits)
+        return path.name
+
+    def _play_marker(self, path: Path) -> str:
+        p = self.player
+        if p.path is None or p.path != path:
+            return ""
+        return "❚❚" if p.paused else "▶"
+
+    def _player_changed(self):
+        state = self.transport.update_state()
+        if state != self._player_state:
+            self._player_state = state
+            self._refresh_table()
 
     def _tick_player(self):
-        if self.player.path is not None and self.player.duration:
-            pos, dur = self.player.position(), self.player.duration
-            self.np_bar.set(pos, dur)
-            self.np_time.configure(text=f"{_mmss(pos)} / {_mmss(dur)}")
-            if pos >= dur - 0.05:
-                self._stop_play()
-        self.after(200, self._tick_player)
+        p = self.player
+        if p.path is not None and p.ended and not p.loop and self.s.player_autoplay:
+            p.ended = False  # don't trigger twice
+            self._play_neighbor(1)
+        if hasattr(self, "transport"):
+            self._player_changed()
+        self.after(150, self._tick_player)
 
     # ---- drag into FL Studio ----
     def _setup_drag(self):
@@ -2078,12 +2140,9 @@ class App(tk.Frame):
                             "avoid copying.\n\nCopy anyway?"):
                         self._build(allow_copy=True, confirmed=True)
                 elif kind == "play_started":
-                    if self.player.path == msg[1]:
-                        self.np_title.configure(text=f"▶  {msg[1].name}")
-                        self._refresh_table()
+                    self._player_changed()
                 elif kind == "play_error":
-                    self._show_np(False)
-                    self._refresh_table()
+                    self._player_changed()
                     self.status.set(msg[1])
                 elif kind == "dl_probe":
                     self._on_probe(msg[1], msg[2], msg[3])
