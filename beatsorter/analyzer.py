@@ -17,7 +17,7 @@ from typing import Any, Dict, Tuple
 import numpy as np
 
 # Bump when the analysis changes so cached results get recomputed.
-ANALYSIS_VERSION = 6
+ANALYSIS_VERSION = 7
 
 SR = 22050  # tempo analysis
 KEY_SR = 44100  # key analysis (what the key models were made for)
@@ -152,39 +152,58 @@ def _tonality(y: np.ndarray, sr: int) -> Dict[str, Any]:
             "harm_ratio": round(harm_ratio, 3), "chroma_peak": round(chroma_peak, 3)}
 
 
-# Key ensemble. Three detectors, each strong on its own:
+# Key ensemble.
 #   - a neural network trained on thousands of tracks (keycnn, madmom's model)
-#   - Essentia-style HPCP with the "edma" (electronic music) profile
-#   - Essentia-style HPCP with the classic Krumhansl profile
-# Their scores are added: log(network probability) + W * (both correlations).
-# On the user's beats (truth from Tunebat / file names) the combination was
-# right more often than any one detector. W was chosen on that small set;
-# results were the same for W from 8 to 30.
+#   - Essentia-style HPCP with the "edma" (electronic music) and Krumhansl
+#     profiles (hpcpkey, NumPy; gives a score for every key)
+#   - Essentia itself, both profiles (essentiakey, via deno; top key only)
+# Scores are added: log(network probability) + W * (both HPCP correlations),
+# plus ESS_BONUS for each key Essentia picks, so Essentia settles close
+# calls. On the user's beats (truth from Tunebat / file names): 15/17
+# without Essentia, 16/17 with it. W was the same from 8 to 30; ESS_BONUS
+# worked from 1 to 1.5 (higher let Essentia overrule clear answers).
 KEY_W = 15.0
+ESS_BONUS = 1.25
 # How far ahead the winner must be (in combined score) for full confidence.
 KEY_MARGIN_FULL = 6.0
 
 
-def detect_key(y44: np.ndarray) -> Dict[str, Any]:
+def _key_index(name: str) -> int:
+    from .keys import parse_key_name
+    k = parse_key_name(name)
+    return -1 if k is None else k.pc + (12 if k.mode == "minor" else 0)
+
+
+def detect_key(y44: np.ndarray, use_essentia: bool = True) -> Dict[str, Any]:
     """Key by the ensemble. y44: mono audio at 44.1 kHz."""
-    from . import hpcpkey, keycnn
+    from . import essentiakey, hpcpkey, keycnn
 
     cnn = keycnn.probs_by_key(y44)
     hp = hpcpkey.key_scores(y44)
     edma, krum = hp["edma"], hp["krumhansl"]
     combined = np.log(cnn + 1e-6) + KEY_W * (edma + krum)
+    ess = essentiakey.detect(y44) if use_essentia else {}
+    ess_idx = [_key_index(ess[k]) for k in ("ess_edma", "ess_krumhansl") if k in ess]
+    for i in ess_idx:
+        if i >= 0:
+            combined[i] += ESS_BONUS
     best = int(np.argmax(combined))
-    second = float(np.sort(combined)[-2])
-    margin = float(combined[best]) - second
+    margin = float(combined[best]) - float(np.sort(combined)[-2])
     key = hpcpkey.index_key(best)
-    votes = sum(int(np.argmax(v)) == best for v in (cnn, edma, krum))
-    name = lambda v: hpcpkey.index_key(int(np.argmax(v))).name  # noqa: E731
-    return {"key_pc": key.pc, "key_mode": key.mode,
-            "key_conf": round(float(np.clip(margin / KEY_MARGIN_FULL, 0, 1)), 3),
-            "key_margin": round(margin, 3), "key_votes": votes,
-            "cnn_key": name(cnn), "cnn_prob": round(float(cnn.max()), 3),
-            "hpcp_edma": name(edma), "hpcp_krumhansl": name(krum),
-            "hpcp_r": round(float(edma[best]), 3)}
+    top = lambda v: int(np.argmax(v))  # noqa: E731
+    # "votes": how many of the three named detectors pick the final key
+    # (network, Essentia edma, Essentia krumhansl; the NumPy HPCP stands in
+    # for Essentia when it isn't available)
+    picks = [top(cnn)] + (ess_idx if len(ess_idx) == 2 else [top(edma), top(krum)])
+    out = {"key_pc": key.pc, "key_mode": key.mode,
+           "key_conf": round(float(np.clip(margin / KEY_MARGIN_FULL, 0, 1)), 3),
+           "key_margin": round(margin, 3), "key_votes": sum(i == best for i in picks),
+           "cnn_key": hpcpkey.index_key(top(cnn)).name, "cnn_prob": round(float(cnn.max()), 3),
+           "hpcp_edma": hpcpkey.index_key(top(edma)).name,
+           "hpcp_krumhansl": hpcpkey.index_key(top(krum)).name,
+           "hpcp_r": round(float(edma[best]), 3)}
+    out.update(ess)
+    return out
 
 
 def _wav_header_broken(path: str, reported_seconds: float) -> bool:

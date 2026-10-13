@@ -83,13 +83,13 @@ Add BPM/key to file names inside Sorted: names the links like
 
 ACCURACY (be realistic)
 -----------------------
-Key: three detectors vote: a neural network trained on thousands of
-  tracks (from the madmom research library) and two Essentia-style key
-  finders (the method behind many online key sites), one tuned for
-  electronic music. On 17 of your beats, with Tunebat's answer used where
-  it differed from the file name, the vote was right on 15 (88%). The old
-  detector got 10. Of the two misses, one is a beat named Fm where all
-  three hear F#m (not yet checked on Tunebat); the other is Em heard as Am.
+Key: several detectors vote: a neural network trained on thousands of
+  tracks (from the madmom research library), Essentia itself (the
+  open-source engine behind many online key sites), and Beat Sorter's own
+  version of Essentia's method, which scores every key. On 17 of your
+  beats, with Tunebat's answer used where it differed from the file name,
+  the vote was right on 16 (94%). Version 1.6.0 got 10. The one miss is a
+  beat named Fm that the detectors hear as F#m (not yet checked on Tunebat).
   Three of those beats were named a half-step off (Cm/Dm where Tunebat
   and all three detectors say C#m/D#m). When all three detectors agree
   against a name, Notes says "name may be off"; right-click > Use detected
@@ -181,5 +181,14 @@ CREDITS
 Key network: Korzeniowski & Widmer, "Genre-Agnostic Key Classification
 with Convolutional Neural Networks" (ISMIR 2018), trained weights from the
 madmom library, license CC BY-NC-SA 4.0 (non-commercial use only).
-Key profiles and method after Essentia (Music Technology Group, UPF) and
-Faraldo et al. ("edma" profile).
+Essentia (Music Technology Group, Universitat Pompeu Fabra), run from its
+official WebAssembly build essentia.js 0.1.3, license AGPL-3.0
+(beatsorter/assets/essentia). Key profiles after Faraldo et al. ("edma").
+
+
+LICENSE
+-------
+Beat Sorter is free and open source under the GNU Affero General Public
+License v3 (see LICENSE). You can use, share and change it; if you share a
+changed version, share its source code too. The key network's trained
+weights are for non-commercial use (CC BY-NC-SA 4.0).

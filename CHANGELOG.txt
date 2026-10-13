@@ -1,3 +1,9 @@
+1.8.0
+- Essentia, the open-source engine behind many online key finders, now votes on every key. It runs through deno (already installed for YouTube downloads); if it can't run, the other detectors carry on without it.
+- On your beats, checked against Tunebat: 16 of 17 keys right (1.7.0: 15, 1.6.0: 10).
+- Beat Sorter is now free and open source under the GNU AGPL v3 (see LICENSE).
+- Your library is re-analyzed once after updating.
+
 1.7.1
 - Fixed "Create desktop shortcut.bat" (it failed with PowerShell errors).
 

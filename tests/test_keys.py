@@ -55,3 +55,19 @@ def test_cnn_probabilities_are_a_distribution():
     from beatsorter import keycnn
     p = keycnn.probs_by_key(_chords([(60, False)], seconds=3))
     assert p.shape == (24,) and abs(p.sum() - 1) < 1e-5
+
+
+def test_essentia_matches_progression_when_available():
+    from beatsorter import essentiakey
+    if not essentiakey.available():
+        pytest.skip("deno not installed")
+    out = essentiakey.detect(_chords([(57, True), (62, True), (64, False), (57, True)] * 2))
+    assert out["ess_edma"] == "A minor" and out["ess_krumhansl"] == "A minor"
+
+
+def test_key_works_without_essentia(monkeypatch):
+    from beatsorter import analyzer, essentiakey
+    monkeypatch.setattr(essentiakey, "_broken", True)
+    out = analyzer.detect_key(_chords([(57, True), (62, True), (64, False), (57, True)] * 2))
+    assert Key(out["key_pc"], out["key_mode"]) == Key(9, "minor")
+    assert "ess_edma" not in out
