@@ -85,7 +85,7 @@ class FakeCard:
 def env(tmp_path, monkeypatch):
     tk = pytest.importorskip("tkinter")
     try:
-        probe = tk.Tk()
+        probe = new_tk()
         probe.destroy()
     except tk.TclError:
         pytest.skip("no screen available")
@@ -99,6 +99,19 @@ def env(tmp_path, monkeypatch):
     return tmp_path, src, out
 
 
+def new_tk():
+    """tk.Tk(), retried: GitHub's Windows machines sometimes fail to read
+    Tcl's init files when a test opens several windows in a row."""
+    import tkinter as tk
+    for attempt in range(6):
+        try:
+            return tk.Tk()
+        except tk.TclError:
+            if attempt == 5:
+                raise
+            time.sleep(1 + attempt)
+
+
 def open_app(monkeypatch):
     import tkinter as tk
     from beatsorter import gui, theme as T
@@ -109,7 +122,7 @@ def open_app(monkeypatch):
     from beatsorter import gui_sorted
     asked = []
     monkeypatch.setattr(gui_sorted, "ask_text", lambda *a, **k: asked.append(a) or None)  # "Cancel"
-    root = tk.Tk()
+    root = new_tk()
     root.geometry("1200x820")
     app = gui.App(root, T.apply(root))
     app.player._factory = FakeCard
