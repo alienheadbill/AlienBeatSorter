@@ -76,16 +76,50 @@ def root_files(root: Path):
                 yield p
 
 
+def _retry(fn, tries: int = 60, delay: float = 1.0):
+    """Windows won't rename/replace files a running program still holds
+    (e.g. a helper that hasn't finished closing). Keep trying for a minute."""
+    for n in range(tries):
+        try:
+            return fn()
+        except OSError:
+            if n == tries - 1:
+                raise
+            time.sleep(delay)
+
+
+def replace_dir(src: Path, dst: Path) -> None:
+    """Swap folder dst for a copy of src without ever leaving it half-deleted:
+    move dst aside (waits until nothing holds it), copy src in, then delete
+    the old one. If the copy fails, the old folder is put back."""
+    old = None
+    if dst.exists():
+        old = dst.with_name(f"{dst.name}.old-{int(time.time() * 1000)}")
+        _retry(lambda: os.rename(dst, old))
+    try:
+        shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    except Exception:
+        shutil.rmtree(dst, ignore_errors=True)
+        if old is not None:
+            _retry(lambda: os.rename(old, dst))
+        raise
+    if old is not None:
+        shutil.rmtree(old, ignore_errors=True)  # leftovers are cleaned next time
+
+
+def clean_leftovers(root: Path) -> None:
+    for d in CODE_DIRS:
+        for p in root.glob(f"{d}.old-*"):
+            shutil.rmtree(p, ignore_errors=True)
+
+
 def copy_code(src: Path, dst: Path) -> None:
     """Copy the app's code from src into dst (dst's .venv/_backup untouched)."""
     for d in CODE_DIRS:
-        if (dst / d).exists():
-            shutil.rmtree(dst / d)
         if (src / d).exists():
-            shutil.copytree(src / d, dst / d,
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            replace_dir(src / d, dst / d)
     for f in root_files(src):
-        shutil.copy2(f, dst / f.name)
+        _retry(lambda f=f: shutil.copy2(f, dst / f.name))
 
 
 def backup(app: Path) -> Path:
@@ -139,6 +173,7 @@ def main(argv) -> int:
         log(f"ERROR: {new} doesn't look like Beat Sorter")
         return 2
     wait_for_exit(pid)
+    clean_leftovers(app)
     old_ver, new_ver = version_of(app), version_of(new)
     log(f"Updating {old_ver} -> {new_ver} in {app}")
     old_req = (app / "requirements.txt").read_bytes() if (app / "requirements.txt").exists() else b""

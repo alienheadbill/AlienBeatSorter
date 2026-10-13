@@ -64,7 +64,10 @@ def _start() -> Optional[subprocess.Popen]:
         p = subprocess.Popen(
             [exe, "run", "-q", "--no-config", "--no-lock", "--allow-read", str(SCRIPT)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, encoding="utf-8", env=env, cwd=str(SCRIPT.parent),
+            text=True, encoding="utf-8", env=env,
+            # work from the temp folder, never from inside the app (Windows
+            # can't update a folder a running program is working in)
+            cwd=tempfile.gettempdir(),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except OSError:
         _broken = True

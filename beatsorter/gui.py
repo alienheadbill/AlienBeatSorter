@@ -731,8 +731,11 @@ class App(tk.Frame):
         self._quit_for_update()
 
     def _quit_for_update(self):
+        self.cancel_evt.set()
         try:
             self.player.stop()
+            from . import essentiakey
+            essentiakey._stop()  # close the Essentia helper before files are replaced
         except Exception:
             pass
         self.root.destroy()
@@ -2205,6 +2208,20 @@ def run():
         messagebox.showerror("Beat Sorter", f"Something went wrong: {val}\n\nDetails saved to:\n{p}")
 
     root.report_callback_exception = report
+    try:
+        _start(root)
+    except Exception as e:  # make startup problems visible (pythonw has no console)
+        p = _log_error(traceback.format_exc())
+        try:
+            messagebox.showerror("Beat Sorter", f"Beat Sorter couldn't start: {e}\n\n"
+                                 f"Details saved to:\n{p}")
+        finally:
+            root.destroy()
+        return
+    root.mainloop()
+
+
+def _start(root):
     fonts = T.apply(root)
     icons = [T.load_image(f"head_{n}.png") for n in (256, 64, 32, 16)]
     icons = [i for i in icons if i]
@@ -2218,4 +2235,3 @@ def run():
         except tk.TclError:
             pass
     _dark_title_bar(root)
-    root.mainloop()

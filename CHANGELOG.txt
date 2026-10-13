@@ -1,3 +1,7 @@
+1.9.2
+- Fixed: an update could leave Beat Sorter unable to open on Windows (a helper program still had the app folder open while it was being replaced). Updates now wait until the folder is free and never leave it half-replaced.
+- If Beat Sorter ever can't start, it now says why instead of closing silently.
+
 1.9.1
 - New player bar at the bottom of every tab: play/pause, stop, previous/next beat, a seek bar you can click or drag, volume, Loop and Autoplay.
 - Fixed: a beat started from the Sorted tab couldn't be stopped there.
