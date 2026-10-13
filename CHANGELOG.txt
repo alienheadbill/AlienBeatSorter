@@ -1,3 +1,7 @@
+1.9.4
+- Tidier names in the Sorted folder: "Nasty_142bpm_Cm" shows as "Nasty [142 BPM · C#m]". Underscores become spaces, and the BPM/key already in a name are shown once, in the same style for every beat. Your original files keep their names.
+- FL Studio's tags follow automatically when links in Sorted are renamed or moved.
+
 1.9.3
 - Report a problem (top right): send a problem or idea as a GitHub issue or an email, with technical details you can see first. Error messages offer it too.
 - Safer updates: if a new version doesn't open, the previous one is put back automatically. Leftover helpers are closed before files are replaced.

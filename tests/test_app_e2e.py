@@ -169,7 +169,7 @@ def test_whole_app(env, monkeypatch):
         app._build(confirmed=True)
         pump(root, lambda: (out / ".beatsorter").exists() and not app.busy, what="build")
         files = rels(out)
-        assert "140-149 BPM/A minor/Midnight 140bpm Am.wav" in files
+        assert "140-149 BPM/A minor/Midnight [140 BPM · Am].wav" in files
         assert any(f.startswith("One-Shots/Kicks/") for f in files)
         assert any(f.startswith("090-099 BPM/No Key/drum loop") for f in files)
 
@@ -177,14 +177,14 @@ def test_whole_app(env, monkeypatch):
         app._show_tab("library")
         app.tree.selection_set(str(idx(app, "Midnight")))
         app._apply_tag("dark")
-        assert "Tags/dark/Midnight 140bpm Am.wav" in rels(out)
+        assert "Tags/dark/Midnight [140 BPM · Am].wav" in rels(out)
         app._apply_untag("dark")
-        assert "Tags/dark/Midnight 140bpm Am.wav" not in rels(out)
+        assert "Tags/dark/Midnight [140 BPM · Am].wav" not in rels(out)
 
         # ---- fix BPM/key: Sorted folder follows by itself ----
         app.tree.selection_set(str(idx(app, "house idea")))
         app._apply_fix(key="A minor")
-        pump(root, lambda: "120-129 BPM/A minor/house idea 128 bpm G major.wav" in rels(out),
+        pump(root, lambda: "120-129 BPM/A minor/house idea [128 BPM · Am].wav" in rels(out),
              timeout=20, what="fix moves the link")
 
         # ---- Sorted tab: My Folders, drag to folder, rename, layout ----
@@ -192,19 +192,19 @@ def test_whole_app(env, monkeypatch):
         st = app.sorted_tab
         fid = app.folders.create("Album ideas")
         st.drop_beats([idx(app, "Midnight"), idx(app, "boom bap 92 Cm.")], f"my:{fid}")
-        pump(root, lambda: "My Folders/Album ideas/Midnight 140bpm Am.wav" in rels(out),
+        pump(root, lambda: "My Folders/Album ideas/Midnight [140 BPM · Am].wav" in rels(out),
              timeout=20, what="My Folders link")
         st.drop_beats([idx(app, "boom bap 92 Cm.")], "auto:140-149 BPM\x1fC minor")  # 92 can't fold: asks
         st.drop_beats([idx(app, "Midnight")], "auto:070-079 BPM\x1fA minor")  # 140 -> 70 (half time)
-        pump(root, lambda: "070-079 BPM/A minor/Midnight 140bpm Am.wav" in rels(out),
+        pump(root, lambda: "070-079 BPM/A minor/Midnight [70 BPM · Am].wav" in rels(out),
              timeout=20, what="drag to a half-time folder")
         app.s.folder_names["070-079 BPM"] = "Slow"
         st._changed("rename")
-        pump(root, lambda: "Slow/A minor/Midnight 140bpm Am.wav" in rels(out), timeout=20,
+        pump(root, lambda: "Slow/A minor/Midnight [70 BPM · Am].wav" in rels(out), timeout=20,
              what="rename an automatic folder")
         st.layout_var.set("Key → BPM")
         st._set_layout()
-        pump(root, lambda: "A minor/Slow/Midnight 140bpm Am.wav" in rels(out), timeout=20,
+        pump(root, lambda: "A minor/Slow/Midnight [70 BPM · Am].wav" in rels(out), timeout=20,
              what="switch layout")
         app.folders.delete(fid)
         st._changed("deleted")

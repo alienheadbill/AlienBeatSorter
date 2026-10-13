@@ -141,13 +141,13 @@ def test_tag_folders_build_and_untag(tmp_path):
     tags = {str(files[0]): {"dark", "favorite"}}
     items = plan(recs, decs, out, True, tags=tags)
     build(items, src, out)
-    assert (tag_folder(out, "dark") / "beat [142].wav").exists()
-    assert (tag_folder(out, "favorite") / "beat [142].wav").exists()
+    assert (tag_folder(out, "dark") / "beat [142 BPM].wav").exists()
+    assert (tag_folder(out, "favorite") / "beat [142 BPM].wav").exists()
     # live tag on the second file, then untag it
-    add_items([PlanItem(files[1], tag_folder(out, "dark") / "beat [142].wav")], src, out)
+    add_items([PlanItem(files[1], tag_folder(out, "dark") / "beat [142 BPM].wav")], src, out)
     assert len(list(tag_folder(out, "dark").iterdir())) == 2
     assert remove_tag_links(files[1], "dark", src, out) == 1
-    assert (tag_folder(out, "dark") / "beat [142].wav").exists()  # first file's link stays
+    assert (tag_folder(out, "dark") / "beat [142 BPM].wav").exists()  # first file's link stays
     assert remove_tag_links(files[0], "favorite", src, out) == 1
     assert not tag_folder(out, "favorite").exists()  # empty tag folder removed
     assert digest(src) == before

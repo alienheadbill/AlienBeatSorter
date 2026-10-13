@@ -42,8 +42,9 @@ HOW FILES ARE SORTED
   140-149 BPM\Key unknown\   no key in the name, and "Use detected key" is off
   Tags\dark\, Tags\drill\    one folder per tag you create (see below)
 Folders are zero-padded ("080-089 BPM") so FL lists them in order.
-Links inside Sorted are named with their BPM/key, e.g. "Nasty [142 Cm]",
-so typing 142 or Cm in FL Studio's Browser search finds them instantly.
+Links inside Sorted get tidy names with their BPM and key, e.g.
+"Nasty_142bpm_Cm.mp3" shows as "Nasty [142 BPM · C#m].mp3", so typing 142
+or C#m in FL Studio's Browser search finds them instantly.
 
 If a file name already has the BPM or key (e.g. "Midnight 140bpm Am"),
 the name wins over detection. If detection strongly disagrees, the file
@@ -77,8 +78,8 @@ One-shots under: shorter files go to One-Shots without BPM/key folders.
 Min confidence: below these, a detected BPM/key goes to _Review.
 Use detected key for files without a key in the name: on by default.
   Turn it off to keep guessed keys out of your key folders.
-Add BPM/key to file names inside Sorted: names the links like
-  "Late Night [135 Gm].wav". Originals keep their names.
+Add BPM/key to file names inside Sorted: tidies the links' names and adds
+  BPM and key, e.g. "Late Night [135 BPM · Gm].wav". Originals keep their names.
 
 
 ACCURACY (be realistic)

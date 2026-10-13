@@ -85,3 +85,36 @@ def test_oneshot_names():
     }
     wrong = {n: type_from_name(n) for n, e in cases.items() if type_from_name(n) != e}
     assert not wrong, wrong
+
+
+@pytest.mark.parametrize("name,title", [
+    ("Nasty_142bpm_Cm", "Nasty"),
+    ("1st_Chain__127_fm_", "1st Chain"),
+    ("Rage Type Beat (150 BPM, F#m)", "Rage Type Beat"),
+    ("Drive_thru_5th_ward__152___cmin_", "Drive thru 5th ward"),
+    ("Speeding_in_the_64_150_Em", "Speeding in the 64"),
+    ("Type Beat [140 BPM] [Key: Am] prod. me", "Type Beat prod. me"),
+    ("Song in A minor", "Song"),
+    ("loop - 128 - Bb", "loop"),
+    ("Who I Am", "Who I Am"),          # "Am" here is a word, not a key
+    ("808 Boom C", "808 Boom C"),
+    ("Late_Night", "Late Night"),
+    ("140 Am", "140 Am"),              # nothing left: keep the name
+])
+def test_tidy_title(name, title):
+    from beatsorter.filename_tags import tidy_title
+    assert tidy_title(name) == title
+
+
+def test_link_names_style(tmp_path):
+    from pathlib import Path
+    from beatsorter.builder import link_stem
+    from beatsorter.classifier import Decision
+    from beatsorter.keys import Key
+    from beatsorter.pipeline import Record
+    rec = lambda n: Record(Path(f"/b/{n}"), Path(n), 1, tags=parse_filename(n))  # noqa: E731
+    d = Decision("Sorted", bpm=142, key=Key(1, "minor"))
+    assert link_stem(rec("Nasty_142bpm_Cm.mp3"), d, True) == "Nasty [142 BPM · C#m]"
+    assert link_stem(rec("Nasty_142bpm_Cm.mp3"), d, False) == "Nasty_142bpm_Cm"
+    assert link_stem(rec("drum loop.wav"), Decision("Sorted", bpm=90, no_key=True), True) == "drum loop [90 BPM]"
+    assert link_stem(rec("Kick_01.wav"), Decision("One-Shots"), True) == "Kick_01"  # one-shots unchanged

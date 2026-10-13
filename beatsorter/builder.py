@@ -107,17 +107,21 @@ TAGS_FOLDER = "Tags"
 
 def link_stem(rec: Record, d: Decision, add_tags_to_names: bool) -> str:
     """Name (without extension) for a file's link inside Sorted. With
-    add_tags_to_names, BPM/key the original name lacks are appended so
-    FL's Browser search finds them: "Nasty [142 Cm]"."""
+    add_tags_to_names the name is tidied and gets its BPM and key in one
+    consistent style, so FL's Browser search finds them:
+    "Nasty_142bpm_Cm" -> "Nasty [142 BPM · C#m]". The values are the ones
+    the beat is sorted by (your fix, then the file name, then detection).
+    One-shots keep their names. Original files are never renamed."""
     stem = rec.path.stem
-    if add_tags_to_names and d.category != "One-Shots":
+    if add_tags_to_names and d.category not in ("One-Shots", "Error", "Not analyzed"):
+        from .filename_tags import tidy_title
         bits = []
-        if d.bpm and rec.tags.bpm is None:
-            bits.append(f"{d.bpm:g}")
-        if d.key and rec.tags.key is None:
+        if d.bpm:
+            bits.append(f"{d.bpm:g} BPM")
+        if d.key:
             bits.append(d.key.short)
-        if bits:
-            stem = f"{stem} [{' '.join(bits)}]"
+        title = tidy_title(stem)
+        stem = f"{title} [{' · '.join(bits)}]" if bits else title
     return _clean(stem)
 
 
@@ -442,7 +446,9 @@ def remove_tag_links(src: Path, tag: str, source: Path, out: Path) -> int:
         except OSError:
             is_link, same = False, False
         if not is_link:  # a copy (no shared identity): match by name
-            same = f.stem == src.stem or f.stem.startswith(src.stem + " [")
+            from .filename_tags import tidy_title
+            same = (f.stem == src.stem or f.stem.startswith(src.stem + " [")
+                    or f.stem.startswith(tidy_title(src.stem) + " ["))
         if same:
             _guard(f, out, source)
             os.unlink(_long(f))

@@ -59,9 +59,23 @@ class _KeyHit:
 
 
 def _tokens(stem: str) -> List[str]:
-    s = stem.replace("♯", "#").replace("♭", "b")
-    s = re.sub(r"(?i)bpm", " bpm ", s)
-    return _TOKENIZE.findall(s)
+    return [t for t, _, _ in _spans(stem)]
+
+
+def _spans(text: str) -> List[Tuple[str, int, int]]:
+    """Tokens with their (start, end) position in text. "bpm" is always its
+    own token ("140bpm" -> "140", "bpm")."""
+    s = text.replace("♯", "#").replace("♭", "b")  # same length: positions hold
+    out: List[Tuple[str, int, int]] = []
+    pos = 0
+    for m in list(re.finditer(r"(?i)bpm", s)) + [None]:
+        seg_end = m.start() if m else len(s)
+        for t in _TOKENIZE.finditer(s, pos, seg_end):
+            out.append((t.group(), t.start(), t.end()))
+        if m:
+            out.append((m.group(), m.start(), m.end()))
+            pos = m.end()
+    return out
 
 
 def _is_number(tok: str) -> bool:
@@ -168,9 +182,15 @@ def parse_filename(name: str) -> FilenameTags:
 
 def parse_text(text: str) -> FilenameTags:
     """Parse BPM/key from free text such as a YouTube title."""
-    toks = _tokens(text)
+    return _parse(text)[0]
+
+
+def _parse(text: str):
+    """(tags, indexes of the tokens that were read as BPM/key, spans)."""
+    spans = _spans(text)
+    toks = [t for t, _, _ in spans]
     if not toks:
-        return FilenameTags()
+        return FilenameTags(), set(), spans
 
     keys = _find_keys(toks)
     explicit, bare = _find_bpms(toks)
@@ -232,7 +252,53 @@ def parse_text(text: str) -> FilenameTags:
         key = next(iter(weak))
     # else: none found, or conflicting keys -> unsure, leave empty
 
-    return FilenameTags(bpm=bpm, key=key)
+    used = set()  # the tokens that make up the BPM/key tags we read
+    if bpm is not None:
+        for i, v in explicit:
+            if v == bpm:
+                used.add(i)
+                used.update(j for j in (i - 1, i + 1)
+                            if 0 <= j < len(toks) and toks[j].lower() == "bpm")
+        used.update(i for i, v in bare if v == bpm and (not explicit or i in used))
+    if key is not None:
+        for k in accepted:
+            if k.key == key:
+                used.update(range(k.index, k.end + 1))
+                for kw in key_words:
+                    if kw in (k.index - 1, k.index - 2):
+                        used.update(range(kw, k.index))  # "key", "key of", "key:"
+    return FilenameTags(bpm=bpm, key=key), used, spans
+
+
+_SEP = " -–—_.,;:|/·"
+
+
+def tidy_title(stem: str) -> str:
+    """The name without the BPM/key tags it already contains, and with
+    underscores as spaces: "Nasty_142bpm_Cm" -> "Nasty",
+    "Rage Type Beat (150 BPM, F#m)" -> "Rage Type Beat",
+    "Drive_thru_5th_ward__152___cmin_" -> "Drive thru 5th ward".
+    Only removes what parse_filename read as tags, so a title like
+    "Who I Am" is left alone. Falls back to the original name if nothing
+    would be left."""
+    _, used, spans = _parse(stem)
+    chars = list(stem)
+    for i in used:
+        _, a, b = spans[i]
+        chars[a:b] = [" "] * (b - a)
+    t = "".join(chars).replace("_", " ")
+    # brackets left empty or holding only separators: "( , )", "[]"
+    prev = None
+    while prev != t:
+        prev = t
+        t = re.sub(r"[(\[{][\s\-–—,;:|/·.]*[)\]}]", " ", t)
+    t = re.sub(r"\s*(?:[-–—|]\s*){2,}", " - ", t)  # "a -  - b" -> "a - b"
+    t = re.sub(r"\s+", " ", t).strip(_SEP + " ")
+    if used:  # "Song in A minor" -> "Song", "Beat key of Am" -> "Beat"
+        t = re.sub(r"(?i)\s+(?:in(?: the)?(?: key)?(?: of)?|key(?: of)?)$", "", t).strip(_SEP + " ")
+    if not t:
+        t = re.sub(r"\s+", " ", stem.replace("_", " ")).strip() or stem
+    return t
 
 
 def parse_description(text: str) -> FilenameTags:

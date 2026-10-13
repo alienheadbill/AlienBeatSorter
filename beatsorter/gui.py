@@ -1502,6 +1502,7 @@ class App(tk.Frame):
                     pass
         self.status.set(f"Removed \"{tag}\" from {len(recs)} beat{'s' if len(recs) != 1 else ''}")
         self._refresh_table()
+        self._schedule_sync()  # also tidies any link the quick removal missed
 
     # ---- FL Studio Browser tags ----
     def _fl_sorted_paths(self) -> dict:
@@ -2133,6 +2134,7 @@ class App(tk.Frame):
                     if res.linked or res.copied or res.removed_old:
                         cur = self.status.get().replace("  ·  updating your Sorted folder…", "")
                         self.status.set(cur + "  ·  Sorted folder updated")
+                        self._fl_resync_after_build()  # links moved: keep FL's tags pointing at them
                     if res.errors:
                         self.status.set(f"Sorted folder updated, {len(res.errors)} problem(s): "
                                         f"{res.errors[0]}")
