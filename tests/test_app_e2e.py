@@ -160,6 +160,9 @@ def test_whole_app(env, monkeypatch):
         names = sorted(r.path.name for r in app.records)
         assert len(names) == 7 and "notes.txt" not in names
         cat = {r.path.name: d for r, d in zip(app.records, app.decisions)}
+        problems = {r.path.name: r.analysis.get("error") for r in app.records
+                    if r.analysis.get("error")}
+        assert not problems, f"files that failed to analyze: {problems}"
         assert cat["Kick 01.wav"].category == "One-Shots" and cat["Kick 01.wav"].shot_type == "Kicks"
         assert cat["drum loop 90bpm.wav"].no_key
         assert cat["Midnight 140bpm Am.wav"].bpm == 140 and cat["Midnight 140bpm Am.wav"].key.short == "Am"
