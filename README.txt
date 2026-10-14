@@ -141,7 +141,9 @@ BROWSING, TAGS AND PREVIEW (Library tab)
   previous/next beat, a seek bar (click or drag), volume, Loop (repeat the
   beat) and Autoplay (next beat when one ends). Keys: Space play/pause,
   Esc stop, Ctrl+Left/Right jump 10 s, Ctrl+Up/Down previous/next beat.
-* Tag: select one or more beats (Ctrl/Shift-click) and click "+ Tag", or
+* Tag: click "+ Tag" to make a tag, give it a name and a color, and (if
+  beats are selected) tag them. Tags show in their colors in the sidebar.
+  You can also select beats (Ctrl/Shift-click) and click a tag, or
   right-click. Tags are saved by Beat Sorter and never change your files.
   Once the Sorted folder is built, tagging/untagging updates
   Sorted\Tags\<tag>\ right away, so tags work in FL's Browser too.

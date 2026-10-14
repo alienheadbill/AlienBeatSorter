@@ -236,7 +236,7 @@ def test_whole_app(env, monkeypatch):
         app._toggle_play(force_play=True)
         pump(root, lambda: app.player.is_playing(), timeout=30, what="playback starts")
         app._transport_play()
-        assert app.player.paused and app.transport.play_btn.cget("text") == "▶"
+        assert app.player.paused and app.transport.play_btn.icon == "play"
         app._transport_play()
         assert app.player.is_playing()
         app._play_neighbor(1)
@@ -293,3 +293,43 @@ def test_closing_mid_scan_stops_everything(env, monkeypatch):
         p.join(timeout=5)
         assert not p.is_alive(), "an analysis worker kept running after closing"
     assert time.time() - t0 < 8
+
+
+def test_make_colored_tag_without_selection(env, monkeypatch):
+    """+ Tag works with nothing selected: create a colored tag for later use."""
+    root, app = open_app(monkeypatch)
+    try:
+        app._analyze()
+        pump(root, lambda: app.records and not app.busy, what="scan")
+        app._show_tab("library")
+        app.tree.selection_set()  # nothing selected
+        from beatsorter import gui_icons  # noqa: F401 (ensure import ok)
+        # create a tag straight through the store path the dialog uses
+        app.tags.create("midnight vibes", "#50ade5")
+        app.tag_map = app.tags.all()
+        assert "midnight vibes" in app.tags.names()
+        assert app.tags.colors()["midnight vibes"] == "#50ade5"
+        # now apply it to a beat and the colored chip appears in the sidebar
+        app.tree.selection_set(str(idx(app, "Midnight")))
+        app._apply_tag("midnight vibes")
+        app._refresh_table()
+        root.update()
+        chips = [w.cget("text") for w in app.tag_chips_frame.winfo_children()
+                 if isinstance(w, __import__("tkinter").Label)]
+        assert "midnight vibes" in chips
+    finally:
+        app.player.stop()
+        root.destroy()
+
+
+def test_library_has_resizable_split(env, monkeypatch):
+    root, app = open_app(monkeypatch)
+    try:
+        import tkinter.ttk as ttk
+        assert isinstance(app.lib_paned, ttk.PanedWindow)
+        root.update()
+        app._set_sash(300)
+        app._save_sash()
+        assert app.s.library_sidebar == app.lib_paned.sashpos(0)
+    finally:
+        root.destroy()

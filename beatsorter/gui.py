@@ -223,13 +223,13 @@ class App(tk.Frame):
                        "tag · your originals are only read, never moved or renamed").pack(
             side="bottom", anchor="w", pady=(0, 10))
 
-        main = tk.Frame(lib, bg=T.BG)
-        main.pack(fill="both", expand=True)
+        main = ttk.PanedWindow(lib, orient="horizontal")
+        main.pack(fill="both", expand=True, pady=(0, 6))
+        self.lib_paned = main
 
-        # --- sidebar: filters ---
+        # --- sidebar: filters (draggable divider to the table) ---
         side_card = tk.Frame(main, bg=T.SURFACE, highlightthickness=1,
-                             highlightbackground=T.BORDER, width=240)
-        side_card.pack(side="left", fill="y", padx=(0, 12), pady=(0, 6))
+                             highlightbackground=T.BORDER, width=self.s.library_sidebar)
         side_card.pack_propagate(False)
         scroller = T.ScrollFrame(side_card)
         scroller.pack(fill="both", expand=True, padx=(12, 2), pady=12)
@@ -283,14 +283,13 @@ class App(tk.Frame):
 
         # --- right: toolbar, table, now playing ---
         right = tk.Frame(main, bg=T.BG)
-        right.pack(side="left", fill="both", expand=True)
 
         tb = tk.Frame(right, bg=T.BG)
         tb.pack(fill="x", pady=(0, 8))
         self.play_btn = ttk.Button(tb, text="▶  Play", style="Card.TButton", command=self._toggle_play)
         self.play_btn.pack(side="left")
         self.tag_btn = ttk.Button(tb, text="+ Tag", style="Card.TButton",
-                                  command=lambda: self._popup_tag_menu(self.tag_btn))
+                                  command=self._tag_dialog)
         self.tag_btn.pack(side="left", padx=(8, 0))
         self.untag_btn = ttk.Button(tb, text="− Untag", style="Card.TButton",
                                     command=lambda: self._popup_untag_menu(self.untag_btn))
@@ -334,6 +333,11 @@ class App(tk.Frame):
                               text="No signals yet.\nChoose your beats folder and hit Scan.")
         self.empty.place(relx=0.5, rely=0.56, anchor="center")
         self._update_toolbar()
+
+        main.add(side_card, weight=0)  # filters: keep width when the window grows
+        main.add(right, weight=1)      # table: takes the extra space
+        main.after_idle(lambda: self._set_sash(self.s.library_sidebar))
+        main.bind("<ButtonRelease-1>", self._save_sash)
 
         srt = tk.Frame(body, bg=T.BG)
         self.tab_frames["sorted"] = srt
@@ -781,7 +785,7 @@ class App(tk.Frame):
             return
         w = tk.Toplevel(self.root, bg=T.BG)
         w.title("Settings")
-        w.resizable(False, False)
+        w.resizable(True, True)
         w.transient(self.root)
         self._settings_win = w
         c = T.card(w, padding=18)
@@ -835,6 +839,7 @@ class App(tk.Frame):
             row=12, column=2, sticky="e", pady=(18, 0))
         w.protocol("WM_DELETE_WINDOW", self._close_settings)
         w.update_idletasks()  # center over the main window
+        w.minsize(w.winfo_width(), w.winfo_height())
         x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_height()) // 3
         w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
@@ -1306,8 +1311,9 @@ class App(tk.Frame):
 
     def _update_toolbar(self):
         n = len(self._selected()) if hasattr(self, "tree") else 0
-        for b in (self.play_btn, self.tag_btn, self.untag_btn, self.fix_btn):
+        for b in (self.play_btn, self.untag_btn, self.fix_btn):
             b.configure(state="normal" if n else "disabled")
+        self.tag_btn.configure(state="normal")  # make/color tags without a selection
         if n == 0:
             self.play_btn.configure(state="normal" if self.player.path else "disabled")
         sel_loaded = n and self.records[self._selected()[0]].path == self.player.path
@@ -1316,6 +1322,21 @@ class App(tk.Frame):
         else:
             playing = False
         self.play_btn.configure(text="❚❚  Pause" if playing and self.player.path else "▶  Play")
+
+    def _set_sash(self, width: int):
+        try:
+            self.lib_paned.sashpos(0, max(140, min(int(width), 520)))
+        except Exception:
+            pass
+
+    def _save_sash(self, _event=None):
+        try:
+            pos = self.lib_paned.sashpos(0)
+        except Exception:
+            return
+        if pos > 80 and pos != self.s.library_sidebar:
+            self.s.library_sidebar = pos
+            self.s.save()
 
     # ---- filter chips ----
     def _rebuild_chips(self):
@@ -1352,21 +1373,29 @@ class App(tk.Frame):
                      text="No one-shots found.").pack(anchor="w")
         if tag_counts:
             items = [(t, t, c) for t, c in sorted(tag_counts.items(), key=lambda x: (-x[1], x[0].lower()))]
-            self._chip_grid(self.tag_chips_frame, items, self.tag_filter, cols=2)
+            self._chip_grid(self.tag_chips_frame, items, self.tag_filter, cols=2,
+                            colors=self.tags.colors())
         else:
             tk.Label(self.tag_chips_frame, bg=T.SURFACE, fg=T.MUTED, font=self.f["small"],
                      justify="left", wraplength=200,
-                     text="No tags yet. Select beats and click + Tag.").pack(anchor="w")
+                     text="No tags yet. Click + Tag to make one.").pack(anchor="w")
         if not keys:
             tk.Label(self.key_chips_frame, bg=T.SURFACE, fg=T.MUTED, font=self.f["small"],
                      text="Scan to see keys.").pack(anchor="w")
 
-    def _chip_grid(self, frame, items, selected: set, cols: int):
+    def _chip_grid(self, frame, items, selected: set, cols: int, colors: dict = None):
         for n, (value, label, count) in enumerate(items):
             on = value in selected
+            if colors is not None:  # color-coded (tags): fill when on, outline when off
+                col = colors.get(value, T.ACCENT)
+                kw = dict(bg=col, fg=T.contrast_text(col), highlightthickness=1,
+                          highlightbackground=col) if on else \
+                    dict(bg=T.SURFACE_2, fg=T.TEXT, highlightthickness=2, highlightbackground=col)
+            else:
+                kw = dict(bg=T.ACCENT if on else T.SURFACE_2,
+                          fg=T.ACCENT_TEXT if on else T.TEXT)
             chip = tk.Label(frame, text=label, cursor="hand2", padx=8, pady=3,
-                            bg=T.ACCENT if on else T.SURFACE_2,
-                            fg=T.ACCENT_TEXT if on else T.TEXT, font=self.f["small"])
+                            font=self.f["small"], **kw)
             chip.grid(row=n // cols, column=n % cols, sticky="ew", padx=(0, 4), pady=(0, 4))
             chip.bind("<Button-1>", lambda e, v=value, sset=selected: self._toggle_chip(sset, v))
             from .keys import parse_key_name
@@ -1420,7 +1449,7 @@ class App(tk.Frame):
             m.add_command(label=t, command=lambda t=t: self._apply_tag(t))
         if self.tags.names():
             m.add_separator()
-        m.add_command(label="New tag…", command=self._new_tag_dialog)
+        m.add_command(label="New tag / manage…", command=self._tag_dialog)
         return m
 
     def _popup_untag_menu(self, widget, x=None, y=None):
@@ -1441,35 +1470,122 @@ class App(tk.Frame):
             m.add_command(label=t, command=lambda t=t: self._apply_untag(t))
         return m
 
-    def _new_tag_dialog(self):
+    def _tag_dialog(self):
+        """Make a tag (name + color) and, if beats are selected, tag them.
+        Works with nothing selected: the tag is created for later use."""
+        from .tags import TAG_PALETTE, default_color
+        n_sel = len(self._selected())
         w = tk.Toplevel(self.root, bg=T.BG)
-        w.title("New tag")
-        w.resizable(False, False)
+        w.title("Tags")
         w.transient(self.root)
         c = T.card(w, padding=16)
-        c.pack(padx=14, pady=14)
-        ttk.Label(c, text="TAG NAME", style="CardMuted.TLabel").pack(anchor="w")
-        var = tk.StringVar()
-        e = ttk.Entry(c, textvariable=var, width=28)
-        e.pack(pady=(4, 6))
+        c.pack(fill="both", expand=True, padx=14, pady=14)
+
+        note = f"{n_sel} beat{'s' if n_sel != 1 else ''} selected" if n_sel else \
+            "No beats selected — you can still make tags now and use them later."
+        ttk.Label(c, text=note, style="CardMuted.TLabel").pack(anchor="w")
+
+        ttk.Label(c, text="NEW TAG", style="Section.TLabel").pack(anchor="w", pady=(12, 4))
+        name = tk.StringVar()
+        e = ttk.Entry(c, textvariable=name, width=30)
+        e.pack(anchor="w")
         ttk.Label(c, text="e.g. dark, drill, favorite, sold, needs mix",
-                  style="CardMuted.TLabel").pack(anchor="w")
+                  style="CardMuted.TLabel").pack(anchor="w", pady=(3, 8))
 
-        def ok(*_):
-            t = var.get()
+        ttk.Label(c, text="COLOR", style="CardMuted.TLabel").pack(anchor="w")
+        chosen = {"color": TAG_PALETTE[1]}
+        sw_row = tk.Frame(c, bg=T.SURFACE)
+        sw_row.pack(anchor="w", pady=(4, 10))
+        swatches = {}
+
+        def pick(col):
+            chosen["color"] = col
+            for cc, lbl in swatches.items():
+                lbl.configure(highlightbackground=T.TEXT if cc == col else T.BORDER,
+                              highlightthickness=3 if cc == col else 1)
+
+        for col in TAG_PALETTE:
+            sq = tk.Label(sw_row, bg=col, width=2, height=1, cursor="hand2",
+                          highlightthickness=1, highlightbackground=T.BORDER)
+            sq.pack(side="left", padx=2)
+            sq.bind("<Button-1>", lambda e, cc=col: pick(cc))
+            swatches[col] = sq
+        pick(chosen["color"])
+
+        def create(*_):
+            nm = name.get().strip()
+            if not nm:
+                e.focus_set()
+                return
+            tag = self.tags.create(nm, chosen["color"])
+            sel = self._selected()
+            if sel:
+                self.tags.add([str(self.records[i].path) for i in sel], tag)
+                self._after_tag_change(f"Made \"{tag}\" and tagged {len(sel)} "
+                                       f"beat{'s' if len(sel) != 1 else ''}")
+            else:
+                self.tag_map = self.tags.all()
+                self._refresh_table()
+                self.status.set(f"Made tag \"{tag}\". Select beats and click it to apply.")
             w.destroy()
-            if t.strip():
-                self._apply_tag(t)
 
-        ttk.Button(c, text="Add tag", style="Accent.TButton", command=ok).pack(anchor="e", pady=(12, 0))
-        e.bind("<Return>", ok)
-        e.bind("<Escape>", lambda *_: w.destroy())
+        btn = ttk.Button(c, text=f"Create & tag {n_sel} beat{'s' if n_sel != 1 else ''}"
+                         if n_sel else "Create tag", style="Accent.TButton", command=create)
+        btn.pack(anchor="w")
+
+        existing = self.tags.names()
+        if existing:
+            ttk.Label(c, text="YOUR TAGS", style="Section.TLabel").pack(anchor="w", pady=(16, 2))
+            ttk.Label(c, text=("Click a tag to apply it to the selected beats." if n_sel
+                               else "Click to edit a tag's color. Right-click to delete."),
+                      style="CardMuted.TLabel").pack(anchor="w", pady=(0, 6))
+            wrap = tk.Frame(c, bg=T.SURFACE)
+            wrap.pack(anchor="w", fill="x")
+            colors = self.tags.colors()
+            for i, t in enumerate(existing):
+                col = colors.get(t, default_color(t))
+                chip = tk.Label(wrap, text=t, bg=col, fg=T.contrast_text(col), padx=10, pady=3,
+                                cursor="hand2", font=self.f["small"])
+                chip.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 5), pady=3)
+
+                def use(ev, t=t, col=col):
+                    sel = self._selected()
+                    if sel:
+                        tag = self.tags.add([str(self.records[j].path) for j in sel], t)
+                        self._after_tag_change(f"Tagged {len(sel)} beat"
+                                               f"{'s' if len(sel) != 1 else ''} \"{tag}\"")
+                        w.destroy()
+                    else:  # no selection: load it into the editor to recolor
+                        name.set(t)
+                        pick(col)
+
+                def remove(ev, t=t):
+                    if messagebox.askyesno("Beat Sorter", f"Delete the tag \"{t}\" from every beat?",
+                                           parent=w):
+                        self.tags.delete_tag(t)
+                        self._after_tag_change(f"Deleted tag \"{t}\"")
+                        w.destroy()
+
+                chip.bind("<Button-1>", use)
+                chip.bind("<Button-3>", remove)
+
+        e.bind("<Return>", create)
+        w.bind("<Escape>", lambda *_: w.destroy())
         w.update_idletasks()
+        w.minsize(w.winfo_reqwidth(), w.winfo_reqheight())
         x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_height()) // 3
         w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
         _dark_title_bar(w)
         e.focus_set()
+
+    def _after_tag_change(self, msg: str):
+        self.tag_map = self.tags.all()
+        self._refresh_table()
+        out = self._sorted_ready()
+        if out:
+            self._schedule_sync()
+        self.status.set(msg + ("  ·  updating Sorted…" if out else ""))
 
     def _sorted_ready(self) -> Optional[Path]:
         """The Sorted folder if it's been built (so tag folders can be kept
@@ -1557,7 +1673,7 @@ class App(tk.Frame):
             return
         w = tk.Toplevel(self.root, bg=T.BG)
         w.title("Sync tags to FL Studio")
-        w.resizable(False, False)
+        w.resizable(True, True)
         w.transient(self.root)
         c = T.card(w, padding=18)
         c.pack(padx=14, pady=14)
@@ -1641,6 +1757,7 @@ class App(tk.Frame):
         ttk.Button(btns, text="Sync to FL", style="Accent.TButton", command=go).pack(side="right", padx=(0, 8))
         refresh_found()
         w.update_idletasks()
+        w.minsize(w.winfo_width(), w.winfo_height())
         x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_height()) // 3
         w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
@@ -1757,6 +1874,7 @@ class App(tk.Frame):
         ttk.Button(btns, text="Close", style="Card.TButton", command=w.destroy).pack(
             side="right", padx=(0, 8))
         w.update_idletasks()  # center over the main window
+        w.minsize(w.winfo_width(), w.winfo_height())
         x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_height()) // 3
         w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
@@ -1817,7 +1935,7 @@ class App(tk.Frame):
         multi = len(idx) > 1
         w = tk.Toplevel(self.root, bg=T.BG)
         w.title("Fix BPM / key")
-        w.resizable(False, False)
+        w.resizable(True, True)
         w.transient(self.root)
         c = T.card(w, padding=16)
         c.pack(padx=14, pady=14)
@@ -1919,6 +2037,7 @@ class App(tk.Frame):
         w.bind("<Return>", lambda e: save())
         w.bind("<Escape>", lambda e: w.destroy())
         w.update_idletasks()
+        w.minsize(w.winfo_width(), w.winfo_height())
         x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_height()) // 3
         w.geometry(f"+{max(x, 0)}+{max(y, 0)}")
@@ -2011,12 +2130,12 @@ class App(tk.Frame):
             tv = self.tree
         return tv, [i for i in tv.get_children() if i.isdigit()]
 
-    def _play_neighbor(self, step: int):
-        """Previous/next beat in the visible list (from the one playing, or
-        the selection)."""
+    def _neighbor(self, step: int):
+        """(treeview, iid) of the previous/next beat in the visible list
+        (relative to the one playing, or the selection), or None."""
         tv, rows = self._visible_list()
         if not rows:
-            return
+            return None
         cur = None
         if self.player.path is not None:
             cur = next((n for n, i in enumerate(rows)
@@ -2025,9 +2144,17 @@ class App(tk.Frame):
             sel = [i for i in tv.selection() if i in rows]
             cur = rows.index(sel[0]) if sel else (-1 if step > 0 else len(rows))
         nxt = cur + step
-        if not 0 <= nxt < len(rows):
+        return (tv, rows[nxt]) if 0 <= nxt < len(rows) else None
+
+    def _has_neighbor(self, step: int) -> bool:
+        return self._neighbor(step) is not None
+
+    def _play_neighbor(self, step: int):
+        """Play the previous/next beat in the visible list."""
+        got = self._neighbor(step)
+        if not got:
             return
-        iid = rows[nxt]
+        tv, iid = got
         tv.selection_set(iid)
         tv.see(iid)
         self._start_play(self.records[int(iid)])

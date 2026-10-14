@@ -38,6 +38,7 @@ class Settings:
     layout: str = "bpm_key"  # how Sorted nests folders (see organizer.LAYOUTS)
     folder_names: dict = field(default_factory=dict)  # your renames: "140-149 BPM" -> "Fast"
     number_my_folders: bool = False
+    library_sidebar: int = 240  # width of the filter sidebar on the Library tab
     player_volume: float = 0.9
     player_loop: bool = False
     player_autoplay: bool = False  # play the next beat when one ends  # "01 Album" so FL shows My Folders in your order

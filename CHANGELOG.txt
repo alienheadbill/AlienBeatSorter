@@ -1,3 +1,8 @@
+1.11.0
+- Polished the player controls: the play/pause, stop and skip buttons are now crisp icons that stay put (no more jumping when play turns to pause).
+- You can make and color-code tags without selecting a beat first: click + Tag, name it, pick a color. Your tags show in their colors in the filter sidebar. Right-click a tag in the + Tag window to delete it.
+- Resizable: drag the divider between the filter sidebar and the beat list on the Library tab (your position is remembered), and the Settings, Fix, Find-duplicates and FL-sync windows can now be resized.
+
 1.10.0
 - No Python needed: download BeatSorter-Windows.zip from GitHub Releases, unzip it, and double-click Beat Sorter.exe.
 - Closing Beat Sorter now stops everything right away. Before, closing during a scan left the analysis running in the background until it finished.

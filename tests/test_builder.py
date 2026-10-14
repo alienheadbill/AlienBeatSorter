@@ -246,3 +246,32 @@ def test_fl_tags_refuses_while_fl_running(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         fltags.sync(tmp_path / "Tags", {"x.wav": {"Fm"}})
     assert not (tmp_path / "Tags").exists()
+
+
+def test_tag_colors_and_create(tmp_path):
+    from beatsorter.tags import TagStore, default_color
+    ts = TagStore(tmp_path / "lib.db")
+    # make a tag with no beats, with a chosen color
+    assert ts.create("Dark", "#123456") == "Dark"
+    assert "Dark" in ts.names()  # shows up even though it's on no beats
+    assert ts.colors()["Dark"] == "#123456"
+    # applying reuses the spelling and keeps a color for every tag
+    assert ts.add(["/a.wav"], "dark") == "Dark"
+    assert ts.colors()["Dark"] == "#123456"
+    ts.add(["/b.wav"], "wet")
+    assert ts.colors()["wet"] == default_color("wet")  # auto color
+    ts.set_color("wet", "#abcdef")
+    assert ts.colors()["wet"] == "#abcdef"
+    # delete removes it everywhere
+    ts.delete_tag("Dark")
+    assert "Dark" not in ts.names() and "Dark" not in ts.colors()
+    assert ts.all().get("/a.wav") is None
+
+
+def test_contrast_text():
+    import pytest
+    pytest.importorskip("tkinter")
+    from beatsorter.theme import contrast_text
+    assert contrast_text("#ffffff") == "#0a0d08"  # dark text on light
+    assert contrast_text("#111111") == "#ffffff"  # light text on dark
+    assert contrast_text("not a color") == "#ffffff"

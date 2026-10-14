@@ -81,22 +81,18 @@ class TransportBar(tk.Frame):
         p = app.player
         f = app.f
 
+        from .gui_icons import IconButton
         btns = tk.Frame(self, bg=T.SURFACE)
         btns.pack(side="left")
-        self.prev_btn = ttk.Button(btns, text="◀◀", width=4, style="Card.TButton",
-                                   command=lambda: app._play_neighbor(-1))
-        self.play_btn = ttk.Button(btns, text="▶", width=4, style="Accent.TButton",
-                                   command=app._transport_play)
-        self.stop_btn = ttk.Button(btns, text="■", width=4, style="Card.TButton",
-                                   command=app._stop_play)
-        self.next_btn = ttk.Button(btns, text="▶▶", width=4, style="Card.TButton",
-                                   command=lambda: app._play_neighbor(1))
+        self.prev_btn = IconButton(btns, "prev", lambda: app._play_neighbor(-1),
+                                   tip="Previous beat in the list (Ctrl+Up)")
+        self.play_btn = IconButton(btns, "play", app._transport_play, size=38, primary=True,
+                                   tip="Play / pause (Space in the list)")
+        self.stop_btn = IconButton(btns, "stop", app._stop_play, tip="Stop (Esc)")
+        self.next_btn = IconButton(btns, "next", lambda: app._play_neighbor(1),
+                                   tip="Next beat in the list (Ctrl+Down)")
         for b in (self.prev_btn, self.play_btn, self.stop_btn, self.next_btn):
-            b.pack(side="left", padx=(0, 4))
-        T.tooltip(self.prev_btn, "Previous beat in the list (Ctrl+Up)")
-        T.tooltip(self.play_btn, "Play / pause (Space in the list)")
-        T.tooltip(self.stop_btn, "Stop (Esc)")
-        T.tooltip(self.next_btn, "Next beat in the list (Ctrl+Down)")
+            b.pack(side="left", padx=3)
 
         right = tk.Frame(self, bg=T.SURFACE)
         right.pack(side="right")
@@ -177,7 +173,8 @@ class TransportBar(tk.Frame):
             pos, dur = p.position(), p.duration
             self.seek.set(pos / dur if dur else 0)
             self.time.configure(text=f"{mmss(pos)} / {mmss(dur)}" if dur else "")
-        self.play_btn.configure(text="❚❚" if p.active() else "▶")
-        for b in (self.stop_btn,):
-            b.configure(state="normal" if loaded else "disabled")
+        self.play_btn.set_icon("pause" if p.active() else "play")
+        self.stop_btn.set_enabled(loaded)
+        self.prev_btn.set_enabled(self.app._has_neighbor(-1))
+        self.next_btn.set_enabled(self.app._has_neighbor(1))
         return (str(p.path) if loaded else None, p.is_playing(), p.paused)

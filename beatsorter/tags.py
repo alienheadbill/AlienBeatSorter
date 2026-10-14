@@ -15,6 +15,22 @@ from .config import app_dir
 
 MAX_LEN = 30
 
+# Colors offered when you make a tag (readable on the dark UI). The first is
+# the default for tags made before colors existed; others are picked by name.
+TAG_PALETTE = [
+    "#8f32c7", "#52be29", "#50ade5", "#ffcf5c", "#ff6b7a", "#ff9f43",
+    "#c74fd8", "#2bd4a8", "#e85aa0", "#7a8cff", "#c0ca33", "#9aa0a6",
+]
+DEFAULT_TAG_COLOR = TAG_PALETTE[0]
+
+
+def default_color(tag: str) -> str:
+    """A stable color for a tag that doesn't have one chosen yet."""
+    if not tag:
+        return DEFAULT_TAG_COLOR
+    h = sum(ord(c) for c in tag.lower())
+    return TAG_PALETTE[h % len(TAG_PALETTE)]
+
 
 def clean_tag(tag: str) -> str:
     """Tags double as folder names in Sorted\\Tags\\, so keep them safe."""
@@ -33,6 +49,10 @@ class TagStore:
         # Your BPM/key fixes. They win over file names and detection.
         self.conn.execute("CREATE TABLE IF NOT EXISTS overrides ("
                           " path TEXT PRIMARY KEY, bpm REAL, key TEXT)")
+        # A tag's chosen color, and a record that the tag exists even before
+        # it's put on any beat (so you can make a tag, then apply it later).
+        self.conn.execute("CREATE TABLE IF NOT EXISTS tag_meta ("
+                          " tag TEXT PRIMARY KEY, color TEXT)")
         self.conn.commit()
 
     def all(self) -> Dict[str, Set[str]]:
@@ -42,16 +62,57 @@ class TagStore:
         return out
 
     def names(self) -> List[str]:
-        """All tags, most used first."""
+        """Every tag: ones in use first (most-used first), then tags you've
+        made but not applied yet, alphabetically."""
         rows = self.conn.execute(
             "SELECT tag, COUNT(*) c FROM tags GROUP BY tag ORDER BY c DESC, tag COLLATE NOCASE")
-        return [r[0] for r in rows]
+        out = [r[0] for r in rows]
+        seen = {t.lower() for t in out}
+        extra = [r[0] for r in self.conn.execute(
+            "SELECT tag FROM tag_meta ORDER BY tag COLLATE NOCASE") if r[0].lower() not in seen]
+        return out + extra
+
+    def colors(self) -> Dict[str, str]:
+        """tag -> color. Tags with no chosen color get a stable default."""
+        chosen = {t: c for t, c in self.conn.execute("SELECT tag, color FROM tag_meta") if c}
+        out = {t: chosen.get(t) or default_color(t) for t in self.names()}
+        return out
+
+    def set_color(self, tag: str, color: str) -> None:
+        tag = self._canonical(clean_tag(tag))
+        if tag:
+            self.conn.execute("INSERT INTO tag_meta (tag, color) VALUES (?, ?) "
+                              "ON CONFLICT(tag) DO UPDATE SET color = excluded.color", (tag, color))
+            self.conn.commit()
+
+    def create(self, tag: str, color: str = None) -> str:
+        """Register a tag (so it exists and has a color) without putting it on
+        any beat. Returns its canonical spelling, or "" if the name is empty."""
+        tag = clean_tag(tag)
+        if not tag:
+            return ""
+        tag = self._canonical(tag)
+        self.conn.execute("INSERT OR IGNORE INTO tag_meta (tag, color) VALUES (?, ?)",
+                          (tag, color or default_color(tag)))
+        if color:
+            self.conn.execute("UPDATE tag_meta SET color = ? WHERE tag = ?", (color, tag))
+        self.conn.commit()
+        return tag
+
+    def delete_tag(self, tag: str) -> None:
+        """Remove a tag entirely (from every beat and the registry)."""
+        self.conn.execute("DELETE FROM tags WHERE tag = ? COLLATE NOCASE", (tag,))
+        self.conn.execute("DELETE FROM tag_meta WHERE tag = ? COLLATE NOCASE", (tag,))
+        self.conn.commit()
 
     def _canonical(self, tag: str) -> str:
         """Reuse an existing tag's spelling ("Dark" vs "dark")."""
-        row = self.conn.execute("SELECT tag FROM tags WHERE tag = ? COLLATE NOCASE LIMIT 1",
-                                (tag,)).fetchone()
-        return row[0] if row else tag
+        for table in ("tags", "tag_meta"):
+            row = self.conn.execute(f"SELECT tag FROM {table} WHERE tag = ? COLLATE NOCASE LIMIT 1",
+                                    (tag,)).fetchone()
+            if row:
+                return row[0]
+        return tag
 
     def add(self, paths: Iterable[str], tag: str) -> str:
         tag = clean_tag(tag)
@@ -60,6 +121,8 @@ class TagStore:
         tag = self._canonical(tag)
         self.conn.executemany("INSERT OR IGNORE INTO tags VALUES (?, ?)",
                               [(str(p), tag) for p in paths])
+        self.conn.execute("INSERT OR IGNORE INTO tag_meta (tag, color) VALUES (?, ?)",
+                          (tag, default_color(tag)))  # so every tag has a color
         self.conn.commit()
         return tag
 

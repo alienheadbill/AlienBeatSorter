@@ -305,6 +305,17 @@ def card(master, padding=14) -> tk.Frame:
                     highlightthickness=1, highlightbackground=BORDER)
 
 
+def contrast_text(hexcolor: str) -> str:
+    """Black or white, whichever reads better on the given color."""
+    try:
+        h = hexcolor.lstrip("#")
+        r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        return "#ffffff"
+    lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    return "#0a0d08" if lum > 0.6 else "#ffffff"
+
+
 def _mix(a: str, b: str, t: float) -> str:
     t = max(0.0, min(1.0, t))
     ar, ag, ab = int(a[1:3], 16), int(a[3:5], 16), int(a[5:7], 16)
