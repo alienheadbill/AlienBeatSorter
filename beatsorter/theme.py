@@ -194,9 +194,22 @@ class Header(tk.Canvas):
         self.busy = busy
 
     def _tick(self):
-        self.t += 0.08
-        self._draw()
-        self.after(50 if self.busy else 120, self._tick)
+        # Full animation only while working. Idle: stars twinkle about once
+        # a second and the ship holds still, so an open, idle window uses
+        # next to no CPU. Nothing is drawn while the window is minimized.
+        if self.busy:
+            self.t += 0.08
+            self._draw()
+            self.after(50, self._tick)
+            return
+        self.t += 0.9
+        try:
+            visible = self.winfo_viewable()
+        except tk.TclError:
+            return
+        if visible:
+            self._draw()
+        self.after(1000, self._tick)
 
     def _draw(self):
         self.delete("all")
@@ -209,7 +222,7 @@ class Header(tk.Canvas):
                 continue
             self.create_oval(px, py, px + s, py + s, fill=c, outline="")
 
-        bob = math.sin(self.t * (1.6 if self.busy else 0.8)) * (4 if self.busy else 2.5)
+        bob = math.sin(self.t * 1.6) * 4 if self.busy else 0.0
         sx, sy = 22, 14 + bob
         if self.busy:  # pulsing glow around the beam, notes rising
             pulse = 0.5 + 0.5 * math.sin(self.t * 3.2)

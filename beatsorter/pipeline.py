@@ -64,6 +64,8 @@ def analyze_library(settings: Settings, source: Path,
 
         with ProcessPoolExecutor(max_workers=settings.worker_count()) as pool:
             futures = {pool.submit(analyze_file, str(r.path)): r for r in todo}
+            from . import procs
+            procs.watch_pool(pool)  # so closing the app ends the workers right away
             try:
                 for fut in as_completed(futures):
                     rec = futures[fut]
@@ -80,6 +82,7 @@ def analyze_library(settings: Settings, source: Path,
                     if cancel.is_set():
                         break
             finally:
+                procs.forget_pool(pool)
                 if cancel.is_set():
                     for f in futures:
                         f.cancel()

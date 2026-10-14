@@ -271,3 +271,22 @@ def test_whole_app(env, monkeypatch):
         root.destroy()
 
     assert digest(src) == originals  # original beats never changed
+
+
+def test_closing_mid_scan_stops_everything(env, monkeypatch):
+    """Closing the window during a scan must end the analysis workers right
+    away, not let them finish the whole library in the background."""
+    root, app = open_app(monkeypatch)
+    app._analyze()
+    pump(root, lambda: getattr(app, "_scan_thread", None) is not None, timeout=10, what="scan starts")
+    from beatsorter import procs
+    pump(root, lambda: procs._pools, timeout=60, what="workers start")
+    workers = [p for pool in procs._pools for p in pool._processes.values()]
+    assert workers
+    t0 = time.time()
+    app._on_close()
+    assert not app._scan_thread.is_alive()
+    for p in workers:
+        p.join(timeout=5)
+        assert not p.is_alive(), "an analysis worker kept running after closing"
+    assert time.time() - t0 < 8

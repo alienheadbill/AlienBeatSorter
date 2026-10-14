@@ -72,6 +72,8 @@ def _start() -> Optional[subprocess.Popen]:
     except OSError:
         _broken = True
         return None
+    from . import procs
+    procs.tie_to_app(p.pid)  # Windows: ends with the app, even after a crash
     line = _readline(p, TIMEOUT)
     if not line or '"ready"' not in line:
         p.kill()

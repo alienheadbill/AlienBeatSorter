@@ -1,6 +1,13 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+if exist "python\python.exe" (
+  echo This copy of Beat Sorter already includes everything it needs.
+  echo No setup is needed: just double-click "Beat Sorter.exe".
+  echo.
+  pause
+  exit /b 0
+)
 echo.
 echo === Beat Sorter setup ===
 echo.

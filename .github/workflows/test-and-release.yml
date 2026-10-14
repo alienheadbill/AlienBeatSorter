@@ -67,8 +67,30 @@ jobs:
         if: always() && runner.os == 'Linux' && steps.install.outcome == 'success'
         run: xvfb-run -a python -m beatsorter --smoke-test
 
+  windows-download:
+    # Builds the no-Python Windows download and tests it as a user gets it.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build the Windows download (Python included)
+        shell: pwsh
+        run: packaging/build_windows.ps1
+      - name: Test it on a PC with no Python (unzip, start, full tests)
+        shell: pwsh
+        run: packaging/test_bundle.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BeatSorter-Windows
+          path: dist/BeatSorter-Windows.zip
+          retention-days: 7
+
   release:
-    needs: test
+    needs: [test, windows-download]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -79,3 +101,18 @@ jobs:
           fetch-depth: 0
       - name: Publish to users (move the release branch to this tested commit)
         run: git push origin HEAD:refs/heads/release --force
+      - uses: actions/download-artifact@v4
+        with:
+          name: BeatSorter-Windows
+      - name: Put the Windows download on the Releases page
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' beatsorter/version.py)
+          python3 -c "import sys; sys.path.insert(0, '.'); from beatsorter.updater import changelog_section; print(changelog_section(open('CHANGELOG.txt', encoding='utf-8').read(), '$v'))" > notes.txt
+          printf '\n\n**Download:** BeatSorter-Windows.zip below. Unzip it and double-click **Beat Sorter.exe** (no Python needed).\n' >> notes.txt
+          if gh release view "v$v" >/dev/null 2>&1; then
+            gh release upload "v$v" BeatSorter-Windows.zip --clobber
+          else
+            gh release create "v$v" BeatSorter-Windows.zip --target "$GITHUB_SHA" --title "Beat Sorter $v" --notes-file notes.txt --latest
+          fi

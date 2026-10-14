@@ -5,20 +5,29 @@ FL Studio Browser. Your original files are only READ: nothing in your
 beats folder is ever moved, renamed or changed.
 
 
-SETUP (once)
-------------
-1. If you don't have Python: install Python 3.12 from
-   https://www.python.org/downloads/windows/
-   and tick "Add python.exe to PATH" on the first install screen.
-2. Unzip this folder somewhere permanent (e.g. Documents\BeatSorter).
-3. Double-click setup.bat. It installs the audio libraries (a few minutes).
+DOWNLOAD AND START (no Python needed)
+-------------------------------------
+1. Download BeatSorter-Windows.zip:
+   https://github.com/alienheadbill/AlienBeatSorter/releases/latest/download/BeatSorter-Windows.zip
+   (or on the GitHub page: Releases, on the right). Not the green "Code"
+   button: that's the source code, which needs Python.
+2. Right-click the zip > Extract All, into a folder you'll keep
+   (e.g. Documents).
+3. Open the "Beat Sorter" folder and double-click "Beat Sorter.exe".
+   The first time, Windows may say "Windows protected your PC" (the app
+   isn't from a paid-for publisher). Click "More info" > "Run anyway".
 4. Optional: double-click "Create desktop shortcut.bat" for a desktop
    shortcut with the alien-head icon.
+Beat Sorter updates itself from then on (see UPDATES).
+
+From the source code instead (for developers): install Python 3.12 from
+https://www.python.org/downloads/windows/ (tick "Add python.exe to PATH"),
+run setup.bat once, then start "Beat Sorter.bat".
 
 
 USING IT
 --------
-1. Double-click "Beat Sorter.bat".
+1. Double-click "Beat Sorter.exe" (or "Beat Sorter.bat" in a source copy).
 2. "Your beats": pick the folder with your beats.
    "Sorted folder": pick a NEW empty folder. Put it on the SAME DRIVE as
    your beats (e.g. D:\Beats -> D:\Beats Sorted) so no extra space is used.

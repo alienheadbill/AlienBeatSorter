@@ -142,8 +142,13 @@ def backup(app: Path) -> Path:
 
 
 def venv_python(app: Path, windowless: bool) -> Path:
+    """The app's Python: the one bundled in the Windows download
+    (python\\), or the .venv that setup.bat makes."""
     if os.name == "nt":
         name = "pythonw.exe" if windowless else "python.exe"
+        bundled = app / "python" / name
+        if bundled.exists():
+            return bundled
         return app / ".venv" / "Scripts" / name
     return app / ".venv" / "bin" / "python"
 
@@ -182,7 +187,8 @@ def relaunch(app: Path):
         return None
     py = venv_python(app, windowless=True)
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    return subprocess.Popen([str(py), "-m", PACKAGE], cwd=str(app), creationflags=flags,
+    iso = ["-E", "-s"] if py.parent.name == "python" else []  # bundled: ignore other Pythons
+    return subprocess.Popen([str(py), *iso, "-m", PACKAGE], cwd=str(app), creationflags=flags,
                             close_fds=True)
 
 

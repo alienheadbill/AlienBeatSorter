@@ -11,6 +11,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from collections import Counter
 from pathlib import Path
@@ -104,6 +105,7 @@ class App(tk.Frame):
         if "--smoke-test" not in sys.argv:
             self.after(2500, lambda: self._check_updates(quiet=True))
         self.after(300, self._startup_load)
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(1000, self._mark_started)
 
     # ================= layout =================
@@ -928,7 +930,8 @@ class App(tk.Frame):
             except Exception as e:
                 self.q.put(("error", f"Scan failed: {e}"))
 
-        threading.Thread(target=work, daemon=True).start()
+        self._scan_thread = threading.Thread(target=work, daemon=True)
+        self._scan_thread.start()
 
     def _cancel(self):
         self.cancel_evt.set()
@@ -1035,6 +1038,25 @@ class App(tk.Frame):
                 self.q.put(("sync_failed", str(e)))
 
         threading.Thread(target=work, daemon=True).start()
+
+    # ================= closing =================
+    def _on_close(self):
+        """Close everything: nothing keeps running after the window is gone."""
+        self.cancel_evt.set()  # scans
+        self.dl_cancel.set()  # downloads
+        try:
+            self.player.stop()
+        except Exception:
+            pass
+        from . import essentiakey, procs
+        procs.stop_all()  # analysis workers end now, not after the whole scan
+        essentiakey._stop()
+        t = getattr(self, "_scan_thread", None)
+        if t is not None and t.is_alive():
+            t.join(timeout=3)  # lets it save the results it already has
+        if self._sync_running:
+            time.sleep(0.5)  # let a Sorted-folder update finish its current file
+        self.root.destroy()
 
     # ================= feedback =================
     def _report(self, kind: str = "problem", error_text: str = ""):
@@ -2038,9 +2060,10 @@ class App(tk.Frame):
         if p.path is not None and p.ended and not p.loop and self.s.player_autoplay:
             p.ended = False  # don't trigger twice
             self._play_neighbor(1)
-        if hasattr(self, "transport"):
-            self._player_changed()
-        self.after(150, self._tick_player)
+        if hasattr(self, "transport") and (p.path is not None or self._player_state is None
+                                           or self._player_state[0] is not None):
+            self._player_changed()  # only while something is loaded (or just stopped)
+        self.after(150 if p.path is not None else 500, self._tick_player)
 
     # ---- drag into FL Studio ----
     def _setup_drag(self):
@@ -2204,7 +2227,8 @@ class App(tk.Frame):
                     messagebox.showerror("Beat Sorter", msg[1])
         except queue.Empty:
             pass
-        self.after(100, self._poll)
+        quiet = not (self.busy or self.dl_active or self._sync_running or self.player.path)
+        self.after(300 if quiet else 100, self._poll)  # check less often while idle
 
 
 def _log_error(text: str) -> Path:
@@ -2227,6 +2251,14 @@ def _dark_title_bar(root: tk.Tk) -> None:
         for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (new, old)
             if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(val), 4) == 0:
                 break
+    except Exception:
+        pass
+
+
+def logging_flush():
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
     except Exception:
         pass
 
@@ -2284,6 +2316,11 @@ def run():
             sys.exit(0 if ok else 1)
         root.after(int(float(os.environ.get("BEATSORTER_SMOKE_SECONDS", "6")) * 1000), finish)
     root.mainloop()
+    if not smoke:
+        # Window closed (see App._on_close). Exit for real, so no leftover
+        # thread (a download, an update check) keeps the process alive.
+        logging_flush()
+        os._exit(0)
 
 
 def _start(root):
