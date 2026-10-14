@@ -62,35 +62,98 @@ def analyze_library(settings: Settings, source: Path,
             _shot_pass(records, cache, mtimes, report, cancel)
             return records
 
-        with ProcessPoolExecutor(max_workers=settings.worker_count()) as pool:
-            futures = {pool.submit(analyze_file, str(r.path)): r for r in todo}
-            from . import procs
-            procs.watch_pool(pool)  # so closing the app ends the workers right away
-            try:
-                for fut in as_completed(futures):
-                    rec = futures[fut]
-                    try:
-                        rec.analysis = fut.result()
-                    except Exception as e:  # worker crashed
-                        rec.analysis = {"error": f"{type(e).__name__}: {e}"}
-                    if not rec.analysis.get("error") or rec.analysis.get("analyzed"):
-                        cache.put(str(rec.path), rec.size, mtimes[str(rec.path)], rec.analysis)
-                    done += 1
-                    if done % 20 == 0:
-                        cache.commit()
-                    report("Analyzing", done, total, rec)
-                    if cancel.is_set():
-                        break
-            finally:
-                procs.forget_pool(pool)
-                if cancel.is_set():
-                    for f in futures:
-                        f.cancel()
-                    pool.shutdown(wait=True, cancel_futures=True)
+        state = {"done": done}
+
+        def store(rec: Record) -> None:
+            if not rec.analysis.get("error") or rec.analysis.get("analyzed"):
+                cache.put(str(rec.path), rec.size, mtimes[str(rec.path)], rec.analysis)
+            state["done"] += 1
+            if state["done"] % 20 == 0:
+                cache.commit()
+            report("Analyzing", state["done"], total, rec)
+
+        queue = list(todo)
+        marker = _warm_marker()
+        if not marker.exists() and len(queue) > 1:
+            # First scan on this computer (or after an update of the audio
+            # libraries): analyze one file alone first, so the libraries'
+            # one-time compile happens in a single process. Several workers
+            # compiling at once can crash each other.
+            _run_pool(queue[:1], 1, store, cancel)
+            if not _crashed(queue[0]):
+                _mark_warm(marker)
+                queue = queue[1:]  # (if it crashed, it's retried below with the rest)
+        _run_pool(queue, settings.worker_count(), store, cancel)
+        # If a worker crashed anyway, retry those files one at a time; a file
+        # that crashes the analyzer by itself is reported as an error.
+        failed = [r for r in queue if _crashed(r)]
+        for _ in range(len(failed)):
+            if not failed or cancel.is_set():
+                break
+            _run_pool(failed, 1, store, cancel)
+            still = [r for r in failed if _crashed(r)]
+            if len(still) == len(failed):  # no progress: the first one is the culprit
+                still[0].analysis = {"error": "This file crashed the analyzer (it may be damaged)."}
+                store(still[0])
+                still = still[1:]
+            failed = still
         _shot_pass(records, cache, mtimes, report, cancel)
         return records
     finally:
         cache.close()
+
+
+def _run_pool(recs: List[Record], workers: int, store, cancel: threading.Event) -> None:
+    """Analyze recs in worker processes, calling store(rec) for each."""
+    if not recs or cancel.is_set():
+        return
+    from . import procs
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(analyze_file, str(r.path)): r for r in recs}
+        procs.watch_pool(pool)  # so closing the app ends the workers right away
+        try:
+            for fut in as_completed(futures):
+                rec = futures[fut]
+                try:
+                    rec.analysis = fut.result()
+                except Exception as e:  # worker crashed
+                    rec.analysis = {"error": f"{type(e).__name__}: {e}"}
+                if not _crashed(rec):
+                    store(rec)
+                if cancel.is_set():
+                    break
+        finally:
+            procs.forget_pool(pool)
+            if cancel.is_set():
+                for f in futures:
+                    f.cancel()
+                pool.shutdown(wait=True, cancel_futures=True)
+
+
+def _crashed(rec: Record) -> bool:
+    return str(rec.analysis.get("error", "")).startswith("BrokenProcessPool")
+
+
+def _warm_marker() -> Path:
+    """Marks that the audio libraries' one-time compile has been done for
+    these library versions (see analyze_library)."""
+    import os
+    from importlib.metadata import version
+    from .analyzer import ANALYSIS_VERSION
+    try:
+        tag = f"{version('librosa')}-{version('numba')}"
+    except Exception:
+        tag = "unknown"
+    base = Path(os.environ.get("NUMBA_CACHE_DIR") or app_dir() / "numba_cache")
+    return base / f"ready-{ANALYSIS_VERSION}-{tag}.txt"
+
+
+def _mark_warm(marker: Path) -> None:
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("ok", encoding="utf-8")
+    except OSError:
+        pass
 
 
 SHOT_MAX_SECONDS = 5.0  # files shorter than this get one-shot sound measurements

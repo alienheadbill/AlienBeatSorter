@@ -1,6 +1,7 @@
 1.10.0
 - No Python needed: download BeatSorter-Windows.zip from GitHub Releases, unzip it, and double-click Beat Sorter.exe.
 - Closing Beat Sorter now stops everything right away. Before, closing during a scan left the analysis running in the background until it finished.
+- Fixed: the very first scan on a computer could fail for every beat (the audio library's one-time setup crashed when several workers did it at once). It now runs once on its own, and a crash is retried instead of failing the scan.
 - Much less CPU while the app is open and idle (the header animation rests when nothing is happening).
 
 1.9.4

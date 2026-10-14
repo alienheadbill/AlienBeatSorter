@@ -45,6 +45,11 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a python -m pytest -v tests/test_builder.py tests/test_organizer.py; else python -m pytest -v tests/test_builder.py tests/test_organizer.py; fi
+      - name: "Tests: scanning (worker crashes, first-scan warm-up)"
+        if: always() && steps.install.outcome == 'success'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a python -m pytest -v tests/test_pipeline.py; else python -m pytest -v tests/test_pipeline.py; fi
       - name: "Tests: player"
         if: always() && steps.install.outcome == 'success'
         shell: bash

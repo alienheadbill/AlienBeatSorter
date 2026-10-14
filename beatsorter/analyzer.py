@@ -264,6 +264,9 @@ def _read_broken_wav(path: str) -> Tuple[np.ndarray, int]:
 
 def analyze_file(path: str) -> Dict[str, Any]:
     """Analyze one file. Never raises; errors are returned in 'error'."""
+    crash = os.environ.get("BEATSORTER_TEST_CRASH")  # tests only: simulate a crash
+    if crash and path.endswith(crash):
+        os._exit(3)
     out: Dict[str, Any] = {"path": path, "error": "", "version": ANALYSIS_VERSION}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
