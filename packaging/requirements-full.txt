@@ -1,0 +1,11 @@
+# Full edition: Core plus the optional, internet-facing features.
+librosa>=0.10.2
+soundfile>=0.12.1
+numpy
+sounddevice
+tkinterdnd2
+# YouTube download (yt-dlp + a bundled ffmpeg):
+yt-dlp[default]
+imageio-ffmpeg
+# Essentia key-detection vote (runs through deno):
+deno

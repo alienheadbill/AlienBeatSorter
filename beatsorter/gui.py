@@ -477,6 +477,14 @@ class App(tk.Frame):
             self._update_dl_hint()
 
     def _update_dl_hint(self):
+        ok, why = downloader.available()
+        if not ok:
+            self.dl_hint.set(why)
+            if hasattr(self, "dl_btn"):
+                self.dl_btn.configure(state="disabled")
+            return
+        if hasattr(self, "dl_btn"):
+            self.dl_btn.configure(state="normal")
         src = self.src_var.get().strip()
         if not src:
             self.dl_hint.set("Pick your beats folder above first. Downloads are saved inside it.")

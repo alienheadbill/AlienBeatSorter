@@ -15,15 +15,25 @@ Linux. It installs Beat Sorter the same way `setup.bat` does, then:
 | `tests/test_app_e2e.py` | opens the real window and goes through every feature like a user: scan, build, tags, fixes, Sorted tab (My Folders, drag to folder, rename, layouts), duplicates, FL tag sync, player, problem report, reopening the app; checks the Sorted folder on disk at every step and that original beats are unchanged |
 | `tests/test_apply_update.py` | updates that wait for locked files, never leave a half-replaced app, roll back if the new version won't open, and work while the Essentia helper is running (the 1.9.1 bug) |
 | `python -m beatsorter --smoke-test` | the app opens through the exact startup path Windows uses |
-| Windows download (`packaging/`) | builds BeatSorter-Windows.zip (Python included), unzips it into a folder with spaces on a PC with **no Python on PATH**, starts `Beat Sorter.exe`, then runs the whole test suite with the bundled Python |
+| `tests/test_editions.py` | Core launches without the optional deps; BPM + key still work; YouTube/Essentia report unavailable instead of crashing |
+| Windows download (`packaging/`) | builds **both** editions (Python included), unzips each into a folder with spaces on a PC with **no Python on PATH**, checks the edition's feature matrix, starts `Beat Sorter.exe`, then runs the whole test suite with the bundled Python |
+
+### Editions and size
+
+Two Windows downloads are built from the same code (`packaging/build_windows.ps1 -Edition core|full`):
+- **Core** (~110 MB): `requirements-core.txt` — librosa, soundfile, numpy, sounddevice, tkinterdnd2. Scan/analyze/organize/play/tag.
+- **Full** (~185 MB): `requirements-full.txt` — Core + yt-dlp[default] + imageio-ffmpeg (YouTube) + deno (Essentia vote).
+
+Both strip scikit-learn (a librosa dependency we never call) and build tools. The edition that will be downloaded is recorded in `edition.txt`, and the matching `requirements.txt` ships in the bundle so an update doesn't think the package set changed. **Bundled updates never run pip** (`apply_update` checks for `python/`): a bundle is self-contained, must work offline, and Core must never pull deno. If you ever add a *new* compiled dependency, ship a fresh bundle rather than relying on an update to install it.
 
 ## 2. Users only get versions that passed
 
 The app's updater installs from the **`release`** branch (`update.json`),
 not `main`. The workflow moves `release` to a commit only after every test
 passed on Windows and Linux and the Windows download built and passed its
-tests; it then attaches BeatSorter-Windows.zip to a GitHub Release
-(`v<version>`). The README links to the latest one. A broken commit on `main` never reaches users.
+tests; it then attaches both BeatSorter-Windows.zip (Full) and
+BeatSorter-Windows-Core.zip to a GitHub Release (`v<version>`). The README
+links to the latest ones. A broken commit on `main` never reaches users.
 
 Want to approve each release by hand as well? In GitHub: Settings >
 Environments > New environment "release" > Required reviewers (add

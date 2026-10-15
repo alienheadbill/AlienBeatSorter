@@ -8,8 +8,8 @@ if __name__ == "__main__":
     except Exception as e:  # broken install: say so instead of closing silently
         import traceback
         msg = ("Beat Sorter couldn't start because some of its files are missing or "
-               f"damaged ({e}).\n\nTo repair it, download\n"
-               "https://github.com/alienheadbill/AlienBeatSorter/releases/latest/download/BeatSorter-Windows.zip\n"
+               f"damaged ({e}).\n\nTo repair it, download Beat Sorter again from\n"
+               "https://github.com/alienheadbill/AlienBeatSorter/releases/latest\n"
                "unzip it, and copy its files over your Beat Sorter folder.\n"
                "Your beats, tags and settings are not affected.")
         print(traceback.format_exc(), file=sys.stderr)

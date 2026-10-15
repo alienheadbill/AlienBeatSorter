@@ -8,6 +8,23 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 
+def app_root() -> Path:
+    """The folder the app is installed in (holds the beatsorter package)."""
+    return Path(__file__).resolve().parent.parent
+
+
+def edition() -> str:
+    """'core' or 'full'. The Windows build drops an edition.txt; source and
+    dev installs are treated as 'full' (they have whatever is installed)."""
+    try:
+        e = (app_root() / "edition.txt").read_text(encoding="utf-8").strip().lower()
+        if e in ("core", "full"):
+            return e
+    except Exception:
+        pass
+    return "full"
+
+
 def app_dir() -> Path:
     """%LOCALAPPDATA%\\BeatSorter on Windows, ~/.beatsorter elsewhere."""
     base = os.environ.get("LOCALAPPDATA")

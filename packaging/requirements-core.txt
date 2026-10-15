@@ -1,0 +1,7 @@
+# Core edition: everything needed to scan, analyze (BPM + key), organize,
+# play, tag and keep the Sorted folder in sync. No internet-only features.
+librosa>=0.10.2
+soundfile>=0.12.1
+numpy
+sounddevice
+tkinterdnd2

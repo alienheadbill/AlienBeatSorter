@@ -155,3 +155,36 @@ def test_update_while_essentia_helper_is_running(tmp_path, monkeypatch):
         au.replace_dir(new / "beatsorter", app / "beatsorter")  # must not hit "in use"
     finally:
         essentiakey._stop()
+
+
+def test_bundled_update_skips_pip(tmp_path, monkeypatch, no_wait):
+    """A bundled download (python/ present) must never pip-install on update,
+    even on the first update from a 1.11.0 bundle that shipped no
+    requirements.txt. This is the packaging-omission fix."""
+    app, new = _two_versions(tmp_path)
+    # make it look like a bundle, with the OLD bundle's missing requirements.txt
+    (app / "python").mkdir()
+    (app / "python" / "python.exe").write_text("")
+    (app / "requirements.txt").unlink()  # 1.11.0 bundles didn't ship one
+    (new / "requirements.txt").write_text("librosa\nnumpy\n")  # new one does
+    called = []
+    monkeypatch.setattr(au, "install_requirements", lambda a: called.append(a))
+    monkeypatch.setattr(au, "relaunch", lambda a: FakeProc(
+        lambda: (tmp_path / "started.txt").write_text(au.version_of(a))))
+    au.main(["x", str(app), str(new), "0", str(tmp_path / "update.log")])
+    assert au.version_of(app) == "2.0"
+    assert not called, "a bundled update must not run pip"
+    assert (app / "requirements.txt").read_text() == "librosa\nnumpy\n"  # now shipped
+
+
+def test_source_install_still_pips_on_changed_requirements(tmp_path, monkeypatch, no_wait):
+    """A source (.venv) install keeps the old behaviour: pip when deps change."""
+    app, new = _two_versions(tmp_path)  # no python/ dir -> not a bundle
+    (app / "requirements.txt").write_text("librosa\n")
+    (new / "requirements.txt").write_text("librosa\nnumpy\n")
+    called = []
+    monkeypatch.setattr(au, "install_requirements", lambda a: called.append(a))
+    monkeypatch.setattr(au, "relaunch", lambda a: FakeProc(
+        lambda: (tmp_path / "started.txt").write_text(au.version_of(a))))
+    au.main(["x", str(app), str(new), "0", str(tmp_path / "update.log")])
+    assert called, "a source install should pip when requirements change"
