@@ -5,7 +5,14 @@ param([ValidateSet("core", "full")][string]$Edition = "full")
 # edition's feature matrix, then run the whole test suite with the bundled
 # Python.
 $ErrorActionPreference = "Stop"
-$root = (Resolve-Path "$PSScriptRoot\..").Path
+# Any failure also becomes a GitHub annotation (visible on the run summary
+# without opening the logs).
+trap {
+  $msg = "$($_.Exception.Message)" -replace "`r?`n", " | "
+  Write-Host "::error title=$Edition bundle test::$msg"
+  exit 1
+}
+$root =(Resolve-Path "$PSScriptRoot\..").Path
 $zipName = if ($Edition -eq "core") { "BeatSorter-Windows-Core.zip" } else { "BeatSorter-Windows.zip" }
 $zip = Join-Path $root "dist\$zipName"
 $base = Join-Path $env:RUNNER_TEMP "Test $Edition (with spaces)"
@@ -59,8 +66,13 @@ else:
     assert downloader.available()[0] is False, "Core must report downloader unavailable"
 print(f"{edition} feature matrix OK")
 '@
-$check | & $py -E -s - $Edition
-if ($LASTEXITCODE) { throw "Feature matrix check failed" }
+# Run from inside the unzipped app so `beatsorter` is the bundled copy
+Push-Location $app
+$out = $check | & $py -E -s - $Edition 2>&1 | ForEach-Object { "$_" }
+$code = $LASTEXITCODE
+Pop-Location
+$out | Write-Host
+if ($code) { throw "Feature matrix check failed: " + (($out | Select-Object -Last 6) -join " | ") }
 
 Write-Host "Starting Beat Sorter.exe --smoke-test"
 $p = Start-Process -FilePath (Join-Path $app "Beat Sorter.exe") -ArgumentList "--smoke-test" -Wait -PassThru

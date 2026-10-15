@@ -67,3 +67,17 @@ def test_youtube_download_reports_unavailable_without_crashing(monkeypatch):
 def test_player_imports_without_optional_deps():
     from beatsorter import player  # noqa: F401 — playback is a Core feature
     assert hasattr(player, "Player")
+
+
+def test_bundle_build_keeps_files_librosa_needs_at_runtime():
+    """The Windows build slims site-packages. librosa loads its submodules
+    via lazy_loader, which reads librosa/__init__.pyi at import time, so the
+    build must never delete *.pyi (that broke `import librosa` in the first
+    1.12.0 build). It may drop sklearn, which librosa never imports eagerly."""
+    import re
+    script = (PKG.parent / "packaging" / "build_windows.ps1").read_text(encoding="utf-8")
+    code = "\n".join(l for l in script.splitlines() if not l.lstrip().startswith("#"))
+    for m in re.finditer(r"-Include\s+([^|\n]+)", code):
+        assert ".pyi" not in m.group(1), f"build deletes stub files: {m.group(0)}"
+    stub = Path(importlib.util.find_spec("librosa").origin).with_suffix(".pyi")
+    assert stub.exists(), "librosa needs __init__.pyi (lazy_loader)"

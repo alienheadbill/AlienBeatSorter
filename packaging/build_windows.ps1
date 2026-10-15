@@ -55,8 +55,13 @@ foreach ($d in @("setuptools", "pkg_resources", "wheel", "_distutils_hack")) {
 Get-ChildItem $sp -Recurse -Directory |
   Where-Object { $_.Name -in @("tests", "test", "__pycache__") } |
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-Get-ChildItem $sp -Recurse -File -Include *.pyc, *.pyi -ErrorAction SilentlyContinue |
+# Only compiled caches. NOT *.pyi: librosa loads its submodules through
+# lazy_loader, which reads librosa\__init__.pyi at import time (removing the
+# stubs broke `import librosa`; they're ~2 MB in total).
+Get-ChildItem $sp -Recurse -File -Include *.pyc -ErrorAction SilentlyContinue |
   Remove-Item -Force -ErrorAction SilentlyContinue
+# distutils-precedence.pth would try to import the _distutils_hack we removed
+Remove-Item "$sp\distutils-precedence.pth" -Force -ErrorAction SilentlyContinue
 
 # 4. The app itself (same files the updater manages). The edition's
 #    requirements ship as requirements.txt so an update doesn't think the
@@ -94,4 +99,7 @@ if ($LASTEXITCODE) { throw "Zipping failed" }
 Pop-Location
 $mb = [math]::Round((Get-Item "$dist\$zipName").Length / 1MB)
 $folder = [math]::Round((Get-ChildItem $app -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
+$bytes = (Get-Item "$dist\$zipName").Length
 Write-Host "Built dist\$zipName ($Edition): $mb MB download, $folder MB unzipped"
+# Shown as an annotation on the run summary (readable without the logs)
+Write-Host "::notice title=$Edition size::$zipName = $bytes bytes ($([math]::Round($bytes / 1MB, 1)) MiB zipped, $folder MiB unzipped)"

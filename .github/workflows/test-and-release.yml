@@ -99,8 +99,12 @@ jobs:
         shell: pwsh
         run: packaging/test_bundle.ps1 -Edition ${{ matrix.edition }}
       - uses: actions/upload-artifact@v4
+        # always: so the download size can be measured even if a test failed
+        # (release only runs when this whole job passed)
+        if: always()
         with:
           name: BeatSorter-Windows-${{ matrix.edition }}
+          if-no-files-found: ignore
           path: dist/*.zip
           retention-days: 7
 
