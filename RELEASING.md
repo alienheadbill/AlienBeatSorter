@@ -21,8 +21,8 @@ Linux. It installs Beat Sorter the same way `setup.bat` does, then:
 ### Editions and size
 
 Two Windows downloads are built from the same code (`packaging/build_windows.ps1 -Edition core|full`):
-- **Core** (~110 MB): `requirements-core.txt` — librosa, soundfile, numpy, sounddevice, tkinterdnd2. Scan/analyze/organize/play/tag.
-- **Full** (~185 MB): `requirements-full.txt` — Core + yt-dlp[default] + imageio-ffmpeg (YouTube) + deno (Essentia vote).
+- **Core** (~133 MB): `requirements-core.txt` — librosa, soundfile, numpy, sounddevice, tkinterdnd2. Scan/analyze/organize/play/tag.
+- **Full** (~206 MB): `requirements-full.txt` — Core + yt-dlp[default] + imageio-ffmpeg (YouTube) + deno (Essentia vote).
 
 Both strip scikit-learn (a librosa dependency we never call) and build tools. The edition that will be downloaded is recorded in `edition.txt`, and the matching `requirements.txt` ships in the bundle so an update doesn't think the package set changed. **Bundled updates never run pip** (`apply_update` checks for `python/`): a bundle is self-contained, must work offline, and Core must never pull deno. If you ever add a *new* compiled dependency, ship a fresh bundle rather than relying on an update to install it.
 

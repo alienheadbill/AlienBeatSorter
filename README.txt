@@ -10,11 +10,11 @@ DOWNLOAD AND START (no Python needed)
 Two downloads, both on the Releases page
 (https://github.com/alienheadbill/AlienBeatSorter/releases/latest). Pick one:
 
-* BeatSorter-Windows-Core.zip  (recommended, ~110 MB)
+* BeatSorter-Windows-Core.zip  (recommended, ~133 MB)
     Scan and analyze your beats (BPM + key), organize them into BPM/key
     folders, play, tag and keep the Sorted folder in sync with FL Studio.
     This is everything most people need.
-* BeatSorter-Windows.zip  (Full, ~185 MB)
+* BeatSorter-Windows.zip  (Full, ~206 MB)
     Everything in Core, PLUS downloading beats from YouTube and a third
     key-detection vote from Essentia (very slightly better key accuracy).
 

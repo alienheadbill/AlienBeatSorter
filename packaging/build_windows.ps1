@@ -5,8 +5,8 @@ param([ValidateSet("core", "full")][string]$Edition = "full")
 # Users unzip and double-click; no Python install needed.
 #
 #   -Edition core : scan / analyze (BPM + key) / organize / play / tag.
-#                   No YouTube download, no Essentia vote. ~110 MB.
-#   -Edition full : Core + YouTube download + Essentia key vote. ~185 MB.
+#                   No YouTube download, no Essentia vote. ~133 MB.
+#   -Edition full : Core + YouTube download + Essentia key vote. ~206 MB.
 #
 # Runs on GitHub Actions (windows-latest) after actions/setup-python
 # (Python 3.12) and ilammy/msvc-dev-cmd (the C compiler). Output:
