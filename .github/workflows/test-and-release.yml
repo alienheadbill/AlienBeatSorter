@@ -60,6 +60,11 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a python -m pytest -v tests/test_apply_update.py; else python -m pytest -v tests/test_apply_update.py; fi
+      - name: "Tests: Core/Full editions"
+        if: always() && steps.install.outcome == 'success'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a python -m pytest -v tests/test_editions.py; else python -m pytest -v tests/test_editions.py; fi
       - name: "Tests: whole app, like a user"
         if: always() && steps.install.outcome == 'success'
         shell: bash
@@ -73,7 +78,12 @@ jobs:
         run: xvfb-run -a python -m beatsorter --smoke-test
 
   windows-download:
-    # Builds the no-Python Windows download and tests it as a user gets it.
+    # Builds both no-Python Windows downloads (Core and Full) and tests each
+    # the way a user gets it.
+    strategy:
+      fail-fast: false
+      matrix:
+        edition: [core, full]
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -82,16 +92,20 @@ jobs:
         with:
           python-version: "3.12"
       - uses: ilammy/msvc-dev-cmd@v1
-      - name: Build the Windows download (Python included)
+      - name: Build the ${{ matrix.edition }} Windows download (Python included)
         shell: pwsh
-        run: packaging/build_windows.ps1
-      - name: Test it on a PC with no Python (unzip, start, full tests)
+        run: packaging/build_windows.ps1 -Edition ${{ matrix.edition }}
+      - name: Test it on a PC with no Python (unzip, start, feature matrix, full tests)
         shell: pwsh
-        run: packaging/test_bundle.ps1
+        run: packaging/test_bundle.ps1 -Edition ${{ matrix.edition }}
       - uses: actions/upload-artifact@v4
+        # always: so the download size can be measured even if a test failed
+        # (release only runs when this whole job passed)
+        if: always()
         with:
-          name: BeatSorter-Windows
-          path: dist/BeatSorter-Windows.zip
+          name: BeatSorter-Windows-${{ matrix.edition }}
+          if-no-files-found: ignore
+          path: dist/*.zip
           retention-days: 7
 
   release:
@@ -108,16 +122,21 @@ jobs:
         run: git push origin HEAD:refs/heads/release --force
       - uses: actions/download-artifact@v4
         with:
-          name: BeatSorter-Windows
-      - name: Put the Windows download on the Releases page
+          pattern: BeatSorter-Windows-*
+          merge-multiple: true
+      - name: Put both Windows downloads on the Releases page
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           v=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' beatsorter/version.py)
           python3 -c "import sys; sys.path.insert(0, '.'); from beatsorter.updater import changelog_section; print(changelog_section(open('CHANGELOG.txt', encoding='utf-8').read(), '$v'))" > notes.txt
-          printf '\n\n**Download:** BeatSorter-Windows.zip below. Unzip it and double-click **Beat Sorter.exe** (no Python needed).\n' >> notes.txt
+          {
+            printf '\n\n**Downloads** (unzip and double-click **Beat Sorter.exe** — no Python needed):\n'
+            printf '* **BeatSorter-Windows-Core.zip** — recommended. Scan, organize, play and tag your beats.\n'
+            printf '* **BeatSorter-Windows.zip** (Full) — adds YouTube download and the Essentia key vote.\n'
+          } >> notes.txt
           if gh release view "v$v" >/dev/null 2>&1; then
-            gh release upload "v$v" BeatSorter-Windows.zip --clobber
+            gh release upload "v$v" BeatSorter-Windows.zip BeatSorter-Windows-Core.zip --clobber
           else
-            gh release create "v$v" BeatSorter-Windows.zip --target "$GITHUB_SHA" --title "Beat Sorter $v" --notes-file notes.txt --latest
+            gh release create "v$v" BeatSorter-Windows.zip BeatSorter-Windows-Core.zip --target "$GITHUB_SHA" --title "Beat Sorter $v" --notes-file notes.txt --latest
           fi

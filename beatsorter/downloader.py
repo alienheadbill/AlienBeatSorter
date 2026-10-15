@@ -90,10 +90,17 @@ def _base_opts() -> dict:
 def available() -> Tuple[bool, str]:
     """Whether downloading can work here, and why not."""
     import importlib.util
+    from .config import edition
+    core_msg = ("YouTube download is part of the Full edition. This is the Core "
+                "edition — get the Full download from the Beat Sorter releases page "
+                "(More → Report a problem has the link), or run setup.bat if you "
+                "installed from source.")
+    setup_msg = "The downloader isn't installed. Run setup.bat again."
+    miss = edition() == "core"
     if importlib.util.find_spec("yt_dlp") is None:
-        return False, "The downloader isn't installed. Run setup.bat again."
+        return False, (core_msg if miss else setup_msg)
     if not _ffmpeg():
-        return False, "ffmpeg isn't installed. Run setup.bat again."
+        return False, (core_msg if miss else "ffmpeg isn't installed. Run setup.bat again.")
     return True, ""
 
 

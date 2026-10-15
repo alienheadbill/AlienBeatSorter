@@ -1,3 +1,9 @@
+1.12.0
+- Smaller downloads. There are now two Windows editions: Core (~133 MB, down from 241 MB) with everything most people need - scan, analyze, organize, play, tag - and Full (~206 MB) which adds YouTube download and the Essentia key vote.
+- Both editions still detect BPM and key, keep your files safe, and need no separate Python. Core uses the neural-net and NumPy key voters (16 of 17 of your beats matched Tunebat in Full, 15 of 17 in Core).
+- Dropped a library (scikit-learn) that was being packaged but never used.
+- Updates to a downloaded copy no longer try to reinstall packages, so they're faster and work offline.
+
 1.11.0
 - Polished the player controls: the play/pause, stop and skip buttons are now crisp icons that stay put (no more jumping when play turns to pause).
 - You can make and color-code tags without selecting a beat first: click + Tag, name it, pick a color. Your tags show in their colors in the filter sidebar. Right-click a tag in the + Tag window to delete it.

@@ -7,10 +7,22 @@ beats folder is ever moved, renamed or changed.
 
 DOWNLOAD AND START (no Python needed)
 -------------------------------------
-1. Download BeatSorter-Windows.zip:
-   https://github.com/alienheadbill/AlienBeatSorter/releases/latest/download/BeatSorter-Windows.zip
-   (or on the GitHub page: Releases, on the right). Not the green "Code"
-   button: that's the source code, which needs Python.
+Two downloads, both on the Releases page
+(https://github.com/alienheadbill/AlienBeatSorter/releases/latest). Pick one:
+
+* BeatSorter-Windows-Core.zip  (recommended, ~133 MB)
+    Scan and analyze your beats (BPM + key), organize them into BPM/key
+    folders, play, tag and keep the Sorted folder in sync with FL Studio.
+    This is everything most people need.
+* BeatSorter-Windows.zip  (Full, ~206 MB)
+    Everything in Core, PLUS downloading beats from YouTube and a third
+    key-detection vote from Essentia (very slightly better key accuracy).
+
+Both include their own Python — nothing else to install — and update
+themselves. You can switch editions later by downloading the other one.
+
+1. Download one of the zips above. (Not the green "Code" button: that's the
+   source code, which needs Python.)
 2. Right-click the zip > Extract All, into a folder you'll keep
    (e.g. Documents).
 3. Open the "Beat Sorter" folder and double-click "Beat Sorter.exe".
@@ -18,7 +30,6 @@ DOWNLOAD AND START (no Python needed)
    isn't from a paid-for publisher). Click "More info" > "Run anyway".
 4. Optional: double-click "Create desktop shortcut.bat" for a desktop
    shortcut with the alien-head icon.
-Beat Sorter updates itself from then on (see UPDATES).
 
 From the source code instead (for developers): install Python 3.12 from
 https://www.python.org/downloads/windows/ (tick "Add python.exe to PATH"),

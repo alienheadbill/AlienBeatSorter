@@ -245,10 +245,17 @@ def main(argv) -> int:
             log(f"ERROR while restoring: {e2}")
             _result(f"restore_failed\n{old_ver}\n{new_ver}\n{reason}\n{e2}\n")
 
+    # A bundled download carries its own Python and every package already
+    # installed; updates swap code only. Never pip-install on a bundle: it
+    # would need the network (which a bundle must not), could fail offline,
+    # and could add packages this edition left out (e.g. deno into Core).
+    bundled = (app / "python" / "python.exe").exists()
     try:
         copy_code(new, app)
         new_req = (app / "requirements.txt").read_bytes()
-        if new_req.replace(b"\r", b"") != old_req.replace(b"\r", b""):
+        if bundled:
+            log("bundled install: skipping pip (packages ship with the download)")
+        elif new_req.replace(b"\r", b"") != old_req.replace(b"\r", b""):
             log("requirements.txt changed: installing packages")
             install_requirements(app)
     except Exception as e:
